@@ -83,7 +83,10 @@
     background: color-mix(in srgb, var(--text-3) 20%, transparent);
     overflow: hidden;
   }
-  .fill { height: 100%; border-radius: 999px; min-width: 3px; transition: width .3s ease; }
+  .fill { height: 100%; border-radius: 999px; transition: width .3s ease; }
+  /* Keeps a sliver of a very small spend visible — but never for zero spend,
+     which must read as an empty track rather than a trace of activity. */
+  .fill.nonzero { min-width: 3px; }
 
   table { width: 100%; border-collapse: collapse; }
   .scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-1); }
@@ -196,7 +199,7 @@ function meters(agents) {
           <span class="detail num">cap ${esc(a.cap)} · ${a.in_window}/${a.velocity_max} in window</span>
         </div>
         <div class="track" title="${esc(a.agent)}: ${esc(a.spent)} of ${esc(a.budget)} spent today">
-          <div class="fill" style="width:${(pct * 100).toFixed(1)}%;background:${colour}"></div>
+          <div class="fill${pct > 0 ? " nonzero" : ""}" style="width:${(pct * 100).toFixed(1)}%;background:${colour}"></div>
         </div>
       </div>`;
   }).join("");
