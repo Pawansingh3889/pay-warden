@@ -39,7 +39,7 @@ def _create_via_api(req: PurchaseRequest) -> PravaSession:
     secret = os.environ.get("PRAVA_SECRET_KEY")
     if not secret:
         raise PravaError("PRAVA_SECRET_KEY is not set — copy .env.example to .env")
-    base = os.environ.get("PRAVA_API_BASE", "https://api.prava.space").rstrip("/")
+    base = os.environ.get("PRAVA_API_BASE", "https://sandbox.api.prava.space").rstrip("/")
 
     body = {
         "user_id": os.environ.get("PAY_WARDEN_USER_ID", "pay-warden-user"),
