@@ -1,0 +1,28 @@
+# pay-warden policy — every request_purchase is evaluated against this file.
+# Amounts are strings to keep exact decimal semantics (like Prava's API).
+version: 1
+
+currencies: [USD, GBP, EUR, INR]
+
+agents:
+  demo-shopper:
+    daily_budget: "50.00"
+    max_single_purchase: "25.00"
+  rogue-agent:
+    daily_budget: "10.00"
+    max_single_purchase: "5.00"
+
+merchants:
+  # Empty allow-list means any merchant not denied is permitted.
+  allow: []
+  deny:
+    - "*.casino.example"
+    - "sketchy-deals.example"
+
+velocity:
+  max_purchases: 3
+  window_minutes: 60
+
+# Above this amount the request parks as needs_approval for a human,
+# even if every other rule passes.
+human_approval_over: "100.00"
