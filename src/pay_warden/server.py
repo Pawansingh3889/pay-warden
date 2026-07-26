@@ -7,6 +7,7 @@ receives decisions and payment URLs.
 Run: python -m pay_warden.server  (stdio transport)
 """
 
+import json
 import os
 
 from mcp.server.fastmcp import FastMCP
@@ -111,12 +112,16 @@ def approve_purchase(attempt_id: str) -> dict:
     if attempt["verdict"] != Verdict.NEEDS_APPROVAL.value:
         return {"error": f"Attempt {attempt_id} is '{attempt['verdict']}', not pending approval"}
 
+    # Rebuild the original request from the attempt row. Rows written before
+    # country/products were persisted fall back to a generic line item.
+    products = json.loads(attempt["products"] or "[]")
     req = PurchaseRequest(
         agent=attempt["agent"],
         merchant_name=attempt["merchant_name"],
         merchant_url=attempt["merchant_url"],
-        merchant_country="US",  # TODO: persist country + products on the attempt row
-        products=[{"description": "approved purchase", "unit_price": attempt["total_amount"]}],
+        merchant_country=attempt["merchant_country"] or "US",
+        products=products
+        or [{"description": "approved purchase", "unit_price": attempt["total_amount"]}],
         total_amount=attempt["total_amount"],
         currency=attempt["currency"],
     )

@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from decimal import Decimal
 
 import pytest
@@ -44,6 +46,47 @@ def test_release_pending_attempt(store):
     assert released["verdict"] == Verdict.ALLOWED.value
     assert released["session_id"] == "ses_9"
     assert store.spent_today("shopper") == Decimal("150.00")
+
+
+def test_attempt_persists_country_and_products(store):
+    attempt_id = store.record(make_request("150.00"), PENDING)
+    attempt = store.get(attempt_id)
+    assert attempt["merchant_country"] == "US"
+    assert json.loads(attempt["products"]) == [
+        {"description": "Latte", "unit_price": "150.00", "quantity": 1}
+    ]
+
+
+def test_migrates_db_created_before_country_and_products(tmp_path):
+    db_path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE attempts (
+            id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL,
+            merchant_name TEXT NOT NULL, merchant_url TEXT NOT NULL,
+            total_amount TEXT NOT NULL, currency TEXT NOT NULL,
+            verdict TEXT NOT NULL, rule_id TEXT NOT NULL, reason TEXT NOT NULL,
+            session_id TEXT, payment_url TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO attempts VALUES ('old1','2026-07-25T00:00:00+00:00','shopper',"
+        "'Blue Bottle Coffee','https://bluebottlecoffee.com','5.00','USD',"
+        "'needs_approval','human-approval','big',NULL,NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = AuditStore(db_path)
+    legacy = store.get("old1")
+    assert legacy["merchant_country"] == ""
+    assert json.loads(legacy["products"]) == []
+
+    # New rows land in the migrated table with both fields populated.
+    attempt_id = store.record(make_request(), ALLOWED)
+    assert store.get(attempt_id)["merchant_country"] == "US"
 
 
 def test_recent_filters_by_agent(store):

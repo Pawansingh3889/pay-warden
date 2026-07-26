@@ -4,6 +4,7 @@ Also the source of truth the policy engine reads for daily-budget and
 velocity checks (only ALLOWED attempts count as spend).
 """
 
+import json
 import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -25,9 +26,17 @@ CREATE TABLE IF NOT EXISTS attempts (
     rule_id TEXT NOT NULL,
     reason TEXT NOT NULL,
     session_id TEXT,
-    payment_url TEXT
+    payment_url TEXT,
+    merchant_country TEXT NOT NULL DEFAULT '',
+    products TEXT NOT NULL DEFAULT '[]'
 );
 """
+
+# Columns added after the first schema shipped; older DBs get them via ALTER.
+_MIGRATIONS = {
+    "merchant_country": "ALTER TABLE attempts ADD COLUMN merchant_country TEXT NOT NULL DEFAULT ''",
+    "products": "ALTER TABLE attempts ADD COLUMN products TEXT NOT NULL DEFAULT '[]'",
+}
 
 
 class AuditStore:
@@ -35,6 +44,10 @@ class AuditStore:
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(_SCHEMA)
+        existing = {row["name"] for row in self._conn.execute("PRAGMA table_info(attempts)")}
+        for column, ddl in _MIGRATIONS.items():
+            if column not in existing:
+                self._conn.execute(ddl)
         self._conn.commit()
 
     def record(
@@ -45,8 +58,16 @@ class AuditStore:
         payment_url: str | None = None,
     ) -> str:
         attempt_id = uuid.uuid4().hex[:12]
+        products = json.dumps(
+            [
+                {"description": p.description, "unit_price": str(p.unit_price), "quantity": p.quantity}
+                for p in req.products
+            ]
+        )
         self._conn.execute(
-            "INSERT INTO attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO attempts (id, ts, agent, merchant_name, merchant_url, total_amount,"
+            " currency, verdict, rule_id, reason, session_id, payment_url, merchant_country,"
+            " products) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 attempt_id,
                 datetime.now(UTC).isoformat(),
@@ -60,6 +81,8 @@ class AuditStore:
                 decision.reason,
                 session_id,
                 payment_url,
+                req.merchant_country,
+                products,
             ),
         )
         self._conn.commit()
