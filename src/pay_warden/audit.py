@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS attempts (
     session_id TEXT,
     payment_url TEXT,
     merchant_country TEXT NOT NULL DEFAULT '',
-    products TEXT NOT NULL DEFAULT '[]'
+    products TEXT NOT NULL DEFAULT '[]',
+    base_amount TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS attempts (
 _MIGRATIONS = {
     "merchant_country": "ALTER TABLE attempts ADD COLUMN merchant_country TEXT NOT NULL DEFAULT ''",
     "products": "ALTER TABLE attempts ADD COLUMN products TEXT NOT NULL DEFAULT '[]'",
+    "base_amount": "ALTER TABLE attempts ADD COLUMN base_amount TEXT NOT NULL DEFAULT ''",
 }
 
 
@@ -48,6 +50,12 @@ class AuditStore:
         for column, ddl in _MIGRATIONS.items():
             if column not in existing:
                 self._conn.execute(ddl)
+        # Rows written before base_amount existed were single-currency by
+        # assumption; backfill from total_amount so spend history survives the
+        # migration instead of silently dropping to zero.
+        self._conn.execute(
+            "UPDATE attempts SET base_amount = total_amount WHERE base_amount = ''"
+        )
         self._conn.commit()
 
     def record(
@@ -56,7 +64,14 @@ class AuditStore:
         decision: Decision,
         session_id: str | None = None,
         payment_url: str | None = None,
+        base_amount: Decimal | None = None,
     ) -> str:
+        """Record an attempt.
+
+        `base_amount` is the total converted to the policy's base currency and is
+        what budgets are enforced against. Omit it only when the request is
+        already in the base currency.
+        """
         attempt_id = uuid.uuid4().hex[:12]
         products = json.dumps(
             [
@@ -67,7 +82,7 @@ class AuditStore:
         self._conn.execute(
             "INSERT INTO attempts (id, ts, agent, merchant_name, merchant_url, total_amount,"
             " currency, verdict, rule_id, reason, session_id, payment_url, merchant_country,"
-            " products) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " products, base_amount) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 attempt_id,
                 datetime.now(UTC).isoformat(),
@@ -83,6 +98,7 @@ class AuditStore:
                 payment_url,
                 req.merchant_country,
                 products,
+                str(base_amount if base_amount is not None else req.total_amount),
             ),
         )
         self._conn.commit()
@@ -104,10 +120,10 @@ class AuditStore:
     def spent_today(self, agent: str) -> Decimal:
         midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         rows = self._conn.execute(
-            "SELECT total_amount FROM attempts WHERE agent = ? AND verdict = ? AND ts >= ?",
+            "SELECT base_amount FROM attempts WHERE agent = ? AND verdict = ? AND ts >= ?",
             (agent, Verdict.ALLOWED.value, midnight.isoformat()),
         ).fetchall()
-        return sum((Decimal(r["total_amount"]) for r in rows), Decimal("0"))
+        return sum((Decimal(r["base_amount"]) for r in rows), Decimal("0"))
 
     def purchases_in_window(self, agent: str, window_minutes: int) -> int:
         cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)

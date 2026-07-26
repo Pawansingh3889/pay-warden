@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -87,6 +88,41 @@ def test_migrates_db_created_before_country_and_products(tmp_path):
     # New rows land in the migrated table with both fields populated.
     attempt_id = store.record(make_request(), ALLOWED)
     assert store.get(attempt_id)["merchant_country"] == "US"
+
+
+def test_spend_uses_base_amount_not_the_requested_currency(store):
+    """Budgets are enforced in base currency, so that is what spend must sum."""
+    store.record(make_request("20.00"), ALLOWED, "ses_1", "https://pay/1",
+                 base_amount=Decimal("40.00"))
+    assert store.spent_today("shopper") == Decimal("40.00")
+
+
+def test_migration_backfills_base_amount_from_total(tmp_path):
+    """Adding the column must not silently zero out existing spend history."""
+    db_path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE attempts (
+            id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL,
+            merchant_name TEXT NOT NULL, merchant_url TEXT NOT NULL,
+            total_amount TEXT NOT NULL, currency TEXT NOT NULL,
+            verdict TEXT NOT NULL, rule_id TEXT NOT NULL, reason TEXT NOT NULL,
+            session_id TEXT, payment_url TEXT
+        )
+        """
+    )
+    conn.execute(
+        f"INSERT INTO attempts VALUES ('old1','{datetime.now(UTC).isoformat()}','shopper',"
+        "'Blue Bottle Coffee','https://bluebottlecoffee.com','9.00','USD',"
+        "'allowed','pass','ok',NULL,NULL)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = AuditStore(db_path)
+    assert store.get("old1")["base_amount"] == "9.00"
+    assert store.spent_today("shopper") == Decimal("9.00")
 
 
 def test_recent_filters_by_agent(store):

@@ -4,6 +4,18 @@ version: 1
 
 currencies: [USD, GBP, EUR, INR]
 
+# Every budget, cap and threshold below is denominated in base_currency.
+# Amounts in other currencies are converted with these rates before any
+# comparison — otherwise 100 INR would count the same as 100 USD against a
+# budget, and pricing a purchase in a weaker currency would slip the cap.
+# A policy listing more than one currency must supply a rate for each.
+base_currency: USD
+rates:
+  USD: "1.00"
+  GBP: "1.27"
+  EUR: "1.09"
+  INR: "0.012"
+
 agents:
   demo-shopper:
     daily_budget: "50.00"

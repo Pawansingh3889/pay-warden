@@ -123,7 +123,7 @@
 
   <div class="tiles" id="tiles"></div>
 
-  <h2>Daily budget used</h2>
+  <h2>Daily budget used <span id="denom" class="sub" style="text-transform:none;letter-spacing:0"></span></h2>
   <div class="meters" id="meters"></div>
 
   <h2>Attempts</h2>
@@ -242,6 +242,10 @@ async function refresh() {
 
   document.getElementById("tiles").innerHTML = tiles(state.summary);
   document.getElementById("meters").innerHTML = meters(state.agents);
+  // Budgets are enforced in one base currency; say which, so the bare numbers
+  // on the meters are not mistaken for the currency each purchase used.
+  document.getElementById("denom").textContent =
+    state.base_currency ? `· amounts converted to ${state.base_currency}` : "";
 
   const sel = document.getElementById("fAgent");
   const names = [...new Set(state.attempts.map(a => a.agent))].sort();

@@ -63,10 +63,12 @@ async def state(request) -> JSONResponse:
 
     # Volumes are kept per currency: the engine sums them together for budget
     # purposes, but presenting one blended total here would be a fiction.
-    minted: Counter = Counter()
+    minted: dict[str, Decimal] = {}
     for a in attempts:
         if a["session_id"]:
-            minted[a["currency"]] += Decimal(a["total_amount"])
+            minted[a["currency"]] = minted.get(a["currency"], Decimal("0")) + Decimal(
+                a["total_amount"]
+            )
 
     return JSONResponse(
         {
@@ -81,6 +83,7 @@ async def state(request) -> JSONResponse:
             "rules": Counter(
                 a["rule_id"] for a in attempts if a["verdict"] == Verdict.DENIED.value
             ).most_common(6),
+            "base_currency": policy.base_currency,
             "agents": _agent_budgets(store, policy),
             "attempts": attempts,
         }

@@ -36,6 +36,23 @@ class Policy:
         if raw.get("version") != 1:
             raise ValueError(f"Unsupported policy version: {raw.get('version')!r}")
         self.currencies: list[str] = raw.get("currencies", [])
+
+        # Budgets and caps are denominated in one base currency. Without this,
+        # amounts in different currencies were compared and summed as bare
+        # numbers, so 100 INR counted the same as 100 USD against a budget.
+        self.base_currency: str = raw.get("base_currency", "USD")
+        self.rates: dict[str, Decimal] = {
+            code: Decimal(str(rate)) for code, rate in (raw.get("rates") or {}).items()
+        }
+        self.rates.setdefault(self.base_currency, Decimal("1"))
+        # A single-currency policy needs no rates; a multi-currency one that
+        # omits them would silently under-count, so refuse to load it.
+        missing = [c for c in self.currencies if c not in self.rates]
+        if len(self.currencies) > 1 and missing:
+            raise ValueError(
+                f"Policy lists {len(self.currencies)} currencies but has no "
+                f"{self.base_currency} rate for {missing}. Add a 'rates:' entry for each."
+            )
         self.agents: dict[str, AgentLimits] = {
             name: AgentLimits(
                 daily_budget=Decimal(cfg["daily_budget"]),
@@ -59,6 +76,23 @@ class Policy:
         with open(path, encoding="utf-8") as f:
             return cls(yaml.safe_load(f))
 
+    def to_base(self, amount: Decimal, currency: str) -> Decimal | None:
+        """Convert to the policy's base currency, or None if no rate is known.
+
+        None is a refusal, not a zero — callers must deny rather than let an
+        unconvertible amount through unchecked.
+        """
+        rate = self.rates.get(currency)
+        if rate is None:
+            return None
+        return (amount * rate).quantize(Decimal("0.01"))
+
+    def _amount(self, amount: Decimal, currency: str, base: Decimal) -> str:
+        """Render an amount, showing the base equivalent when it differs."""
+        if currency == self.base_currency:
+            return f"{amount} {currency}"
+        return f"{amount} {currency} ({base} {self.base_currency})"
+
     def evaluate(self, req: PurchaseRequest, ctx: SpendContext) -> Decision:
         agent = self.agents.get(req.agent)
         if agent is None:
@@ -73,6 +107,14 @@ class Policy:
         if self.currencies and req.currency not in self.currencies:
             return _deny("currency", f"Currency {req.currency} not in {self.currencies}")
 
+        base = self.to_base(req.total_amount, req.currency)
+        if base is None:
+            return _deny(
+                "unknown-rate",
+                f"No {self.base_currency} conversion rate for {req.currency}; "
+                f"cannot check it against limits",
+            )
+
         host = urlparse(req.merchant_url).netloc.lower().removeprefix("www.")
         for pattern in self.merchant_deny:
             if fnmatch(host, pattern.lower()):
@@ -82,18 +124,19 @@ class Policy:
         ):
             return _deny("merchant-allow", f"Merchant '{host}' is not on the allow-list")
 
-        if req.total_amount > agent.max_single_purchase:
+        if base > agent.max_single_purchase:
             return _deny(
                 "max-single-purchase",
-                f"{req.total_amount} {req.currency} exceeds single-purchase cap "
-                f"{agent.max_single_purchase} for '{req.agent}'",
+                f"{self._amount(req.total_amount, req.currency, base)} exceeds "
+                f"single-purchase cap {agent.max_single_purchase} {self.base_currency} "
+                f"for '{req.agent}'",
             )
 
-        if ctx.spent_today + req.total_amount > agent.daily_budget:
+        if ctx.spent_today + base > agent.daily_budget:
             return _deny(
                 "daily-budget",
-                f"Would take '{req.agent}' to {ctx.spent_today + req.total_amount} "
-                f"of {agent.daily_budget} daily budget",
+                f"Would take '{req.agent}' to {ctx.spent_today + base} of "
+                f"{agent.daily_budget} {self.base_currency} daily budget",
             )
 
         if self.velocity_max and ctx.purchases_in_window >= self.velocity_max:
@@ -103,12 +146,13 @@ class Policy:
                 f"{self.velocity_window_minutes} min (max {self.velocity_max})",
             )
 
-        if self.human_approval_over is not None and req.total_amount > self.human_approval_over:
+        if self.human_approval_over is not None and base > self.human_approval_over:
             return Decision(
                 verdict=Verdict.NEEDS_APPROVAL,
                 rule_id="human-approval",
-                reason=f"{req.total_amount} {req.currency} exceeds auto-approval threshold "
-                f"{self.human_approval_over}; a human must release it",
+                reason=f"{self._amount(req.total_amount, req.currency, base)} exceeds "
+                f"auto-approval threshold {self.human_approval_over} "
+                f"{self.base_currency}; a human must release it",
             )
 
         return Decision(verdict=Verdict.ALLOWED, rule_id="pass", reason="All policy rules passed")

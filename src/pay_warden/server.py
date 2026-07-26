@@ -87,13 +87,18 @@ def request_purchase(
         agent, merchant_name, merchant_url, merchant_country, products, total_amount, currency
     )
     decision = _evaluate(req)
+    # Budgets are enforced in the policy's base currency, so that is what the
+    # audit trail must store — not the amount as the agent expressed it.
+    base_amount = _policy.to_base(req.total_amount, req.currency)
 
     if decision.verdict is not Verdict.ALLOWED:
-        attempt_id = _audit.record(req, decision)
+        attempt_id = _audit.record(req, decision, base_amount=base_amount)
         return {"attempt_id": attempt_id, **decision.model_dump()}
 
     session = prava.create_session(req)
-    attempt_id = _audit.record(req, decision, session["session_id"], session["payment_url"])
+    attempt_id = _audit.record(
+        req, decision, session["session_id"], session["payment_url"], base_amount=base_amount
+    )
     return {
         "attempt_id": attempt_id,
         **decision.model_dump(),

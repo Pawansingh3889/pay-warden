@@ -8,6 +8,8 @@ from pay_warden.policy import Policy, SpendContext
 POLICY = {
     "version": 1,
     "currencies": ["USD", "GBP"],
+    "base_currency": "USD",
+    "rates": {"USD": "1.00", "GBP": "2.00"},  # round rate keeps the arithmetic obvious
     "agents": {
         "shopper": {"daily_budget": "50.00", "max_single_purchase": "25.00"},
     },
@@ -99,6 +101,79 @@ def test_daily_budget_counts_prior_spend(policy):
 def test_velocity_limit(policy):
     busy = SpendContext(spent_today=Decimal("0"), purchases_in_window=3)
     assert policy.evaluate(make_request(), busy).rule_id == "velocity"
+
+
+def test_cap_is_applied_after_conversion(policy):
+    """A purchase priced in a stronger currency must not slip the cap.
+
+    20 GBP is 40 USD against a 25 USD cap. Comparing the bare number 20 would
+    have allowed it — that was the bug.
+    """
+    req = make_request(
+        products=[Product(description="Espresso machine", unit_price=Decimal("20.00"))],
+        total_amount=Decimal("20.00"),
+        currency="GBP",
+    )
+    decision = policy.evaluate(req, NO_SPEND)
+    assert decision.rule_id == "max-single-purchase"
+    assert "40.00 USD" in decision.reason
+
+
+def test_prior_spend_and_new_amount_share_one_denomination(policy):
+    """spent_today is already in base currency; the new amount must join it there."""
+    spent = SpendContext(spent_today=Decimal("40.00"), purchases_in_window=0)
+    req = make_request(
+        products=[Product(description="Beans", unit_price=Decimal("6.00"))],
+        total_amount=Decimal("6.00"),
+        currency="GBP",  # 12.00 USD → 52.00 total, over the 50.00 budget
+    )
+    assert policy.evaluate(req, spent).rule_id == "daily-budget"
+
+
+def test_weak_currency_is_not_over_counted(policy):
+    """The mirror image: a large number in a weak currency is a small amount.
+
+    Denying this would be just as wrong as allowing the GBP case above.
+    """
+    cheap = Policy({**POLICY, "currencies": ["USD", "INR"], "rates": {"USD": "1.00", "INR": "0.01"}})
+    req = make_request(
+        products=[Product(description="Chai", unit_price=Decimal("300.00"))],
+        total_amount=Decimal("300.00"),
+        currency="INR",  # 3.00 USD, comfortably inside a 25.00 cap
+    )
+    assert cheap.evaluate(req, NO_SPEND).verdict is Verdict.ALLOWED
+
+
+def test_multi_currency_policy_without_rates_refuses_to_load():
+    """Silently under-counting is worse than failing at startup."""
+    with pytest.raises(ValueError, match="no USD rate"):
+        Policy({k: v for k, v in POLICY.items() if k != "rates"})
+
+
+def test_single_currency_policy_needs_no_rates():
+    simple = {k: v for k, v in POLICY.items() if k != "rates"}
+    simple["currencies"] = ["USD"]
+    assert Policy(simple).evaluate(make_request(), NO_SPEND).verdict is Verdict.ALLOWED
+
+
+def test_currency_without_a_rate_is_denied_not_assumed():
+    """With no whitelist any currency reaches conversion; an unknown one must
+    be refused rather than treated as 1:1."""
+    open_currencies = Policy({**POLICY, "currencies": [], "rates": {"USD": "1.00"}})
+    req = make_request(currency="JPY", total_amount=Decimal("5.00"))
+    assert open_currencies.evaluate(req, NO_SPEND).rule_id == "unknown-rate"
+
+
+def test_escalation_threshold_uses_converted_amount():
+    high_cap = Policy(
+        {**POLICY, "agents": {"shopper": {"daily_budget": "500.00", "max_single_purchase": "500.00"}}}
+    )
+    req = make_request(
+        products=[Product(description="Chair", unit_price=Decimal("15.00"))],
+        total_amount=Decimal("15.00"),
+        currency="GBP",  # 30.00 USD, over the 20.00 approval threshold
+    )
+    assert high_cap.evaluate(req, NO_SPEND).verdict is Verdict.NEEDS_APPROVAL
 
 
 def test_large_amount_escalates_to_human():
