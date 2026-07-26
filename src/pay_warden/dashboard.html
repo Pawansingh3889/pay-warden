@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pay-warden · audit trail</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f2;
+    --surface-1: #fcfcfb;
+    --border:    #dededa;
+    --text-1:    #0b0b0b;
+    --text-2:    #52514e;
+    --text-3:    #78776f;
+    /* Status palette — fixed, never themed. Always paired with a text label. */
+    --good:      #0ca30c;
+    --warning:   #fab219;
+    --critical:  #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-0: #121211;
+      --surface-1: #1a1a19;
+      --border:    #33332f;
+      --text-1:    #ffffff;
+      --text-2:    #c3c2b7;
+      --text-3:    #8f8e85;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --border:    #33332f;
+    --text-1:    #ffffff;
+    --text-2:    #c3c2b7;
+    --text-3:    #8f8e85;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 24px 64px;
+    background: var(--surface-0); color: var(--text-1);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--text-2); font-size: 13px; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 12px; color: var(--text-2);
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 11px; cursor: pointer;
+  }
+  button:hover { color: var(--text-1); }
+
+  h2 {
+    font-size: 12px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--text-3);
+    margin: 32px 0 12px;
+  }
+
+  /* KPI row — single headline numbers, no plot, so no hover layer. */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 20px; }
+  .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
+  .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); }
+  .tile .value { font-size: 27px; font-weight: 620; margin-top: 5px; letter-spacing: -0.02em; }
+  .tile .foot { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+  /* Budget meters — magnitude against a known limit. */
+  .meters { display: flex; flex-direction: column; gap: 11px; }
+  .meter { background: var(--surface-1); border: 1px solid var(--border); border-radius: 11px; padding: 13px 16px; }
+  .meter .top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 9px; }
+  .meter .agent { font-weight: 580; }
+  .meter .detail { color: var(--text-2); font-size: 12px; }
+  .track {
+    position: relative; height: 8px; border-radius: 999px;
+    background: color-mix(in srgb, var(--text-3) 20%, transparent);
+    overflow: hidden;
+  }
+  .fill { height: 100%; border-radius: 999px; min-width: 3px; transition: width .3s ease; }
+
+  table { width: 100%; border-collapse: collapse; }
+  .scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-1); }
+  th, td { text-align: left; padding: 9px 14px; white-space: nowrap; border-bottom: 1px solid var(--border); }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: color-mix(in srgb, var(--text-3) 8%, transparent); }
+  td.r { text-align: right; }
+  .muted { color: var(--text-2); }
+  .rule { color: var(--text-2); font-size: 12px; }
+
+  /* Status is never carried by colour alone: dot + written label, ink text. */
+  .verdict { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+  .allowed .dot { background: var(--good); }
+  .denied .dot { background: var(--critical); }
+  .needs_approval .dot { background: var(--warning); }
+
+  .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  select {
+    font: inherit; font-size: 12px; color: var(--text-1); background: var(--surface-1);
+    border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px;
+  }
+  .empty { padding: 28px 16px; color: var(--text-2); text-align: center; }
+  a { color: inherit; text-decoration-color: var(--text-3); text-underline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>pay-warden</h1>
+    <span class="sub">every purchase an agent attempted &mdash; allowed or not</span>
+    <span class="spacer"></span>
+    <span class="sub num" id="stamp"></span>
+    <button id="theme" type="button">theme</button>
+  </header>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Daily budget used</h2>
+  <div class="meters" id="meters"></div>
+
+  <h2>Attempts</h2>
+  <div class="filters">
+    <select id="fAgent"><option value="">all agents</option></select>
+    <select id="fVerdict">
+      <option value="">all verdicts</option>
+      <option value="allowed">allowed</option>
+      <option value="denied">denied</option>
+      <option value="needs_approval">needs approval</option>
+    </select>
+    <span class="sub" id="count"></span>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead><tr>
+        <th>time</th><th>agent</th><th>merchant</th><th class="r">amount</th>
+        <th>verdict</th><th>rule</th><th>session</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const LABEL = {allowed: "allowed", denied: "denied", needs_approval: "needs approval"};
+let state = {attempts: [], agents: [], summary: {}};
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+document.getElementById("theme").onclick = () => {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const now = document.documentElement.getAttribute("data-theme") || (dark ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", now === "dark" ? "light" : "dark");
+};
+
+function tiles(s) {
+  const minted = Object.entries(s.minted || {});
+  const volume = minted.length
+    ? minted.map(([c, v]) => `${v} ${c}`).join(" · ")
+    : "none yet";
+  return [
+    ["attempts", s.attempts, "recorded in the audit trail"],
+    ["allowed", s.allowed, `${s.sessions} Prava session${s.sessions === 1 ? "" : "s"} minted`],
+    ["denied", s.denied, "never reached Prava"],
+    ["escalated", s.needs_approval, "waiting on a human"],
+    ["minted volume", volume, "by currency"],
+  ].map(([label, value, foot]) => `
+    <div class="tile">
+      <div class="label">${esc(label)}</div>
+      <div class="value num">${esc(value)}</div>
+      <div class="foot">${esc(foot)}</div>
+    </div>`).join("");
+}
+
+function meters(agents) {
+  if (!agents.length) return `<div class="empty">No agents in policy.</div>`;
+  return agents.map(a => {
+    const pct = Math.min(1, a.used);
+    // Utilisation band. The percentage is always written out beside the bar,
+    // so the colour reinforces the number rather than replacing it.
+    const colour = a.used >= 0.95 ? "var(--critical)" : a.used >= 0.75 ? "var(--warning)" : "var(--good)";
+    return `
+      <div class="meter">
+        <div class="top">
+          <span class="agent">${esc(a.agent)}</span>
+          <span class="detail num">${esc(a.spent)} / ${esc(a.budget)}</span>
+          <span class="detail num">${Math.round(a.used * 100)}%</span>
+          <span class="spacer"></span>
+          <span class="detail num">cap ${esc(a.cap)} · ${a.in_window}/${a.velocity_max} in window</span>
+        </div>
+        <div class="track" title="${esc(a.agent)}: ${esc(a.spent)} of ${esc(a.budget)} spent today">
+          <div class="fill" style="width:${(pct * 100).toFixed(1)}%;background:${colour}"></div>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function rows() {
+  const agent = document.getElementById("fAgent").value;
+  const verdict = document.getElementById("fVerdict").value;
+  const shown = state.attempts.filter(a =>
+    (!agent || a.agent === agent) && (!verdict || a.verdict === verdict));
+
+  document.getElementById("count").textContent =
+    `${shown.length} of ${state.attempts.length}`;
+
+  if (!shown.length) {
+    document.getElementById("rows").innerHTML =
+      `<tr><td colspan="7" class="empty">No attempts match.</td></tr>`;
+    return;
+  }
+  document.getElementById("rows").innerHTML = shown.map(a => {
+    const host = (a.merchant_url || "").replace(/^https?:\/\//, "");
+    const session = a.payment_url
+      ? `<a href="${esc(a.payment_url)}" target="_blank" rel="noopener" class="num">${esc(a.session_id)}</a>`
+      : `<span class="muted">&mdash;</span>`;
+    return `<tr>
+      <td class="num muted">${esc((a.ts || "").slice(11, 19))}</td>
+      <td>${esc(a.agent)}</td>
+      <td>${esc(a.merchant_name)} <span class="muted">${esc(host)}</span></td>
+      <td class="r num">${esc(a.total_amount)} ${esc(a.currency)}</td>
+      <td><span class="verdict ${esc(a.verdict)}"><span class="dot"></span>${esc(LABEL[a.verdict] || a.verdict)}</span></td>
+      <td class="rule" title="${esc(a.reason)}">${esc(a.rule_id)}</td>
+      <td>${session}</td>
+    </tr>`;
+  }).join("");
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/state");
+    if (!r.ok) return;
+    state = await r.json();
+  } catch { return; }
+
+  document.getElementById("tiles").innerHTML = tiles(state.summary);
+  document.getElementById("meters").innerHTML = meters(state.agents);
+
+  const sel = document.getElementById("fAgent");
+  const names = [...new Set(state.attempts.map(a => a.agent))].sort();
+  if (sel.options.length - 1 !== names.length) {
+    const keep = sel.value;
+    sel.innerHTML = `<option value="">all agents</option>` +
+      names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+    sel.value = keep;
+  }
+  rows();
+  document.getElementById("stamp").textContent =
+    new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+}
+
+document.getElementById("fAgent").onchange = rows;
+document.getElementById("fVerdict").onchange = rows;
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

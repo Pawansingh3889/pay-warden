@@ -48,6 +48,18 @@ purchase is refused once the daily budget is spent, and a large request parks fo
 approval before being released. The denials never reach Prava's API — only allowed
 requests produce a `POST /v1/sessions`. Ends with the audit trail for all six attempts.
 
+## Dashboard
+
+```bash
+python -m pay_warden.dashboard   # http://127.0.0.1:8080
+```
+
+Read-only view of the same audit store the MCP server writes to: attempt counts,
+per-agent spend against daily budgets, top denial rules, and every attempt with its
+verdict, the rule that fired, and a link to the Prava session where one was minted.
+Filter by agent or verdict; refreshes every five seconds. Point it at another store
+with `PAY_WARDEN_DB`, e.g. `PAY_WARDEN_DB=pay_warden_demo.sqlite3` after a demo run.
+
 Register in Claude Code / any MCP client:
 
 ```json
