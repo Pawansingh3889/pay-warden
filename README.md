@@ -35,6 +35,19 @@ cp .env.example .env        # add your sk_test_ key from dashboard.prava.space
 python -m pay_warden.server # start the MCP server (stdio)
 ```
 
+## Demo
+
+```bash
+python scripts/demo.py            # live — allowed requests mint real Prava sessions
+python scripts/demo.py --dry-run  # policy only, no network
+```
+
+Runs a good agent beside a rogue one through the real MCP tools: a compliant purchase
+mints a session, a denied merchant and an over-cap request are stopped, a third identical
+purchase is refused once the daily budget is spent, and a large request parks for human
+approval before being released. The denials never reach Prava's API — only allowed
+requests produce a `POST /v1/sessions`. Ends with the audit trail for all six attempts.
+
 Register in Claude Code / any MCP client:
 
 ```json

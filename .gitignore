@@ -4,3 +4,4 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 pay_warden_audit.sqlite3
+pay_warden_demo.sqlite3

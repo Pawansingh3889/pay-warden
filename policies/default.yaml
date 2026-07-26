@@ -11,6 +11,11 @@ agents:
   rogue-agent:
     daily_budget: "10.00"
     max_single_purchase: "5.00"
+  # Headroom above human_approval_over, so large requests reach the escalation
+  # rule instead of being stopped earlier by the single-purchase cap.
+  ops-agent:
+    daily_budget: "500.00"
+    max_single_purchase: "250.00"
 
 merchants:
   # Empty allow-list means any merchant not denied is permitted.
