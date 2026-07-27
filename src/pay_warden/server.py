@@ -9,18 +9,33 @@ Run: python -m pay_warden.server  (stdio transport)
 
 import json
 import os
+from typing import Callable, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from pay_warden import prava
 from pay_warden.audit import AuditStore
-from pay_warden.models import Product, PurchaseRequest, Verdict
+from pay_warden.models import Decision, Product, PurchaseRequest, Verdict
 from pay_warden.policy import Policy, SpendContext
 
 mcp = FastMCP("pay-warden")
 
 _policy = Policy.load(os.environ.get("PAY_WARDEN_POLICY", "policies/default.yaml"))
 _audit = AuditStore(os.environ.get("PAY_WARDEN_DB", "pay_warden_audit.sqlite3"))
+
+# Optional model guard consulted *after* the rules and only on requests the rules
+# ALLOW — the one place rule-evasions can hide (an evasion is a deny-truth the
+# rules waved through). It never sees a rule denial, so it cannot weaken one; it
+# can only catch what the rules are structurally blind to. Left unset, behaviour
+# is exactly the rules engine. A deployment injects one with `set_second_opinion`.
+SecondOpinion = Callable[[PurchaseRequest, SpendContext, Decision], Decision]
+_second_opinion: Optional[SecondOpinion] = None
+
+
+def set_second_opinion(fn: Optional[SecondOpinion]) -> None:
+    """Install (or clear) the model guard the engine consults on allowed requests."""
+    global _second_opinion
+    _second_opinion = fn
 
 
 def _evaluate(req: PurchaseRequest):
@@ -30,7 +45,10 @@ def _evaluate(req: PurchaseRequest):
             req.agent, _policy.velocity_window_minutes
         ),
     )
-    return _policy.evaluate(req, ctx)
+    decision = _policy.evaluate(req, ctx)
+    if decision.verdict is Verdict.ALLOWED and _second_opinion is not None:
+        decision = _second_opinion(req, ctx, decision)
+    return decision
 
 
 def _build_request(
