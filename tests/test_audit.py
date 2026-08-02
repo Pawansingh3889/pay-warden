@@ -133,3 +133,73 @@ def test_recent_filters_by_agent(store):
 
     assert len(store.recent()) == 2
     assert [r["agent"] for r in store.recent(agent="shopper")] == ["shopper"]
+
+
+def test_released_at_records_when_a_human_answered(store):
+    """`ts` is when the limit fired; `released_at` is when somebody answered.
+
+    The gap between them is the only measure of whether a threshold is
+    protecting anyone or just taxing them, so releasing must stamp it and must
+    leave `ts` alone.
+    """
+    attempt_id = store.record(make_request("150.00"), PENDING)
+    parked = store.get(attempt_id)
+
+    store.mark_released(attempt_id, "ses_9", "https://pay/9")
+
+    released = store.get(attempt_id)
+    assert released["ts"] == parked["ts"]
+    assert datetime.fromisoformat(released["released_at"]) >= datetime.fromisoformat(parked["ts"])
+
+
+def test_released_at_is_not_backfilled(tmp_path):
+    """The deliberate absence, and the mirror image of the base_amount backfill.
+
+    `total_amount` was a correct substitute for a single-currency row. There is
+    no correct substitute for a timestamp nobody recorded — reusing `ts` would
+    claim every historical release was instant, which is a fabricated metric
+    rather than a missing one.
+    """
+    db_path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE attempts (
+            id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL,
+            merchant_name TEXT NOT NULL, merchant_url TEXT NOT NULL,
+            total_amount TEXT NOT NULL, currency TEXT NOT NULL,
+            verdict TEXT NOT NULL, rule_id TEXT NOT NULL, reason TEXT NOT NULL,
+            session_id TEXT, payment_url TEXT
+        )
+        """
+    )
+    # Already released under the old schema: allowed, but carrying the rule that
+    # parked it — the only fingerprint of "escalated then released".
+    conn.execute(
+        "INSERT INTO attempts VALUES ('old1','2026-07-25T00:00:00+00:00','shopper',"
+        "'Blue Bottle Coffee','https://bluebottlecoffee.com','150.00','USD',"
+        "'allowed','human-approval','big','ses_old','https://pay/old')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = AuditStore(db_path)
+
+    assert store.get("old1")["released_at"] == ""
+
+
+def test_rows_are_marked_live_by_default(store):
+    """Provenance rides on the row, not the file, because a demo database is
+    realistically mixed: a real run and then a simulated sweep into one file."""
+    attempt_id = store.record(make_request(), ALLOWED)
+
+    assert store.get(attempt_id)["source"] == "live"
+
+
+def test_the_engines_hot_path_is_indexed(store):
+    """spent_today and purchases_in_window run on every purchase decision and
+    were full scans. The reporting layer is the secondary beneficiary."""
+    names = {row[1] for row in store._conn.execute("PRAGMA index_list(attempts)")}
+
+    assert "idx_attempts_agent_verdict_ts" in names
+    assert "idx_attempts_ts" in names
