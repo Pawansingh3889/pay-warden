@@ -83,7 +83,7 @@ def capabilities(conn: sqlite3.Connection) -> dict[str, bool]:
     """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(attempts)")}
     return {
-        "released_at": "released_at" in columns,
+        "answered_at": "answered_at" in columns,
         "source": "source" in columns,
     }
 
@@ -164,6 +164,7 @@ def _totals(conn: sqlite3.Connection, policy: Policy, since: str) -> dict[str, A
         " SUM(CASE WHEN verdict = 'allowed' THEN 1 ELSE 0 END) AS allowed,"
         " SUM(CASE WHEN verdict = 'denied' THEN 1 ELSE 0 END) AS denied,"
         " SUM(CASE WHEN verdict = 'needs_approval' THEN 1 ELSE 0 END) AS needs_approval,"
+        " SUM(CASE WHEN verdict = 'rejected' THEN 1 ELSE 0 END) AS rejected,"
         " SUM(CASE WHEN session_id IS NOT NULL AND session_id <> '' THEN 1 ELSE 0 END) AS sessions"
         " FROM attempts WHERE ts >= ?",
         (since,),
@@ -188,6 +189,7 @@ def _totals(conn: sqlite3.Connection, policy: Policy, since: str) -> dict[str, A
         "allowed": row["allowed"] or 0,
         "denied": row["denied"] or 0,
         "needs_approval": row["needs_approval"] or 0,
+        "rejected": row["rejected"] or 0,
         "sessions": row["sessions"] or 0,
         "authorised": {code: _money(value) for code, value in sorted(authorised.items())},
     }
@@ -198,19 +200,22 @@ def _escalation(
 ) -> dict[str, Any]:
     """The flagship: what happens at the moment a limit bites.
 
-    `mark_released` leaves `rule_id` intact, so (allowed, human-approval) is the
-    fingerprint of "escalated then released" and (needs_approval, human-approval)
-    is one still waiting.
+    Neither `mark_released` nor `mark_rejected` touches `rule_id`, so within the
+    escalation population the verdict alone says which of the three states a row
+    is in: allowed (released), rejected (refused), needs_approval (still waiting).
     """
     counts = conn.execute(
         "SELECT SUM(CASE WHEN verdict = 'needs_approval' THEN 1 ELSE 0 END) AS pending,"
-        " SUM(CASE WHEN verdict = 'allowed' THEN 1 ELSE 0 END) AS released"
+        " SUM(CASE WHEN verdict = 'allowed' THEN 1 ELSE 0 END) AS released,"
+        " SUM(CASE WHEN verdict = 'rejected' THEN 1 ELSE 0 END) AS rejected"
         " FROM attempts WHERE rule_id = ? AND ts >= ?",
         (ESCALATION_RULE, since),
     ).fetchone()
     pending = counts["pending"] or 0
     released = counts["released"] or 0
-    raised = pending + released
+    rejected = counts["rejected"] or 0
+    answered = released + rejected
+    raised = pending + answered
 
     friction_rows = conn.execute(
         "SELECT base_amount, currency FROM attempts"
@@ -244,11 +249,15 @@ def _escalation(
     return {
         "raised": raised,
         "released": released,
+        "rejected": rejected,
+        "answered": answered,
         "pending": pending,
-        # A lower bound, not an approval rate: pay-warden has no rejection
-        # state, so a human who decided no leaves a row identical to one nobody
-        # has looked at yet.
-        "release_rate": (released / raised) if raised else None,
+        # Over what was *answered*, which is now a real denominator: a refusal is
+        # its own verdict, so it is no longer indistinguishable from a queue
+        # nobody has read. Anything still parked is reported separately rather
+        # than folded in, because an unanswered request is not a soft no.
+        "release_rate": (released / answered) if answered else None,
+        "answered_rate": (answered / raised) if raised else None,
         "friction_cost": _money(friction),
         "value_held_now": _money(held),
         "unpriceable_rows": friction_unpriceable + held_unpriceable,
@@ -267,27 +276,32 @@ def _parse(raw: str) -> datetime | None:
 
 
 def _latency(conn: sqlite3.Connection, caps: dict[str, bool], since: str) -> dict[str, Any]:
-    """How long a human took, for the releases that were instrumented.
+    """How long a human took to answer, either way.
 
-    Never a bare median. `released_at` was added after the fact and cannot be
-    backfilled, so every figure travels with `n` and the untimed count — a
-    median over an unstated population is a lie by omission.
+    Both outcomes count. Timing only the releases would report how fast people
+    say yes and stay silent about how long they take to say no — and a slow no
+    costs a spender exactly as much waiting as a slow yes.
+
+    Never a bare median. `answered_at` was added after the fact and cannot be
+    backfilled from `ts`, so every figure travels with `n` and the untimed count:
+    a median over an unstated population is a lie by omission.
     """
-    if not caps["released_at"]:
-        return {"available": False, "reason": "this database predates released_at"}
+    if not caps["answered_at"]:
+        return {"available": False, "reason": "this database predates answered_at"}
 
     waits: list[int] = []
+    by_outcome: dict[str, list[int]] = {"released": [], "rejected": []}
     untimed = 0
     invalid = 0
     for row in conn.execute(
-        "SELECT ts, released_at FROM attempts"
-        " WHERE rule_id = ? AND verdict = 'allowed' AND ts >= ?",
+        "SELECT ts, answered_at, verdict FROM attempts"
+        " WHERE rule_id = ? AND verdict IN ('allowed', 'rejected') AND ts >= ?",
         (ESCALATION_RULE, since),
     ):
-        if not row["released_at"]:
+        if not row["answered_at"]:
             untimed += 1
             continue
-        parked, answered = _parse(row["ts"]), _parse(row["released_at"])
+        parked, answered = _parse(row["ts"]), _parse(row["answered_at"])
         if parked is None or answered is None:
             invalid += 1
             continue
@@ -298,6 +312,7 @@ def _latency(conn: sqlite3.Connection, caps: dict[str, bool], since: str) -> dic
             invalid += 1
             continue
         waits.append(seconds)
+        by_outcome["released" if row["verdict"] == "allowed" else "rejected"].append(seconds)
     waits.sort()
     return {
         "available": True,
@@ -307,6 +322,15 @@ def _latency(conn: sqlite3.Connection, caps: dict[str, bool], since: str) -> dic
         "median_s": int(statistics.median(waits)) if waits else None,
         "p90_s": waits[min(len(waits) - 1, int(len(waits) * 0.9))] if waits else None,
         "max_s": waits[-1] if waits else None,
+        # Split out because they answer different questions: one is how long a
+        # purchase waits before it can happen, the other how long somebody waits
+        # to be told it will not.
+        "median_released_s": (
+            int(statistics.median(by_outcome["released"])) if by_outcome["released"] else None
+        ),
+        "median_rejected_s": (
+            int(statistics.median(by_outcome["rejected"])) if by_outcome["rejected"] else None
+        ),
     }
 
 
@@ -620,13 +644,13 @@ LIMITS = (
         "fix": "Stamp a policy hash at decision time.",
     },
     {
-        "text": "No decline record — a human who refuses an escalation leaves no trace, so"
-        " release rate is a lower bound.",
-        "fix": "Add a rejected verdict and a reject_purchase tool.",
+        "text": "A rejection records the decision, not the deliberation — nothing says whether"
+        " the person was notified, or how long they knew before they answered.",
+        "fix": "Timestamp the notification, not just the reply.",
     },
     {
-        "text": "Time-to-release starts at instrumentation; releases recorded before that column"
-        " existed are excluded from every latency figure.",
+        "text": "Time-to-answer starts at instrumentation; escalations decided before that"
+        " column existed are excluded from every latency figure.",
         "fix": "None — the gap is historical and cannot be recovered.",
     },
 )

@@ -101,7 +101,7 @@ def test_the_feed_carries_what_the_table_renders(client):
     row = client.get("/api/state").json()["feed"]["rows"][0]
     for field in ("ts", "agent", "merchant_name", "total_amount", "currency",
                   "verdict", "rule_id", "reason", "session_id", "payment_url",
-                  "released_at", "source"):
+                  "answered_at", "answer_note", "source"):
         assert field in row
 
 

@@ -36,6 +36,15 @@ class Verdict(StrEnum):
     ALLOWED = "allowed"
     DENIED = "denied"
     NEEDS_APPROVAL = "needs_approval"
+    # A person looked at a parked request and said no. Deliberately distinct
+    # from DENIED, which is the engine refusing under a rule: nobody chose that.
+    # The difference matters to the spender, who is owed a different sentence,
+    # and to anyone measuring whether a threshold is set right — without it,
+    # "still waiting" and "refused" are the same row and no approval rate has an
+    # honest denominator.
+    #
+    # It is never returned by `Policy.evaluate`. Only a human produces it.
+    REJECTED = "rejected"
 
 
 class Decision(BaseModel):

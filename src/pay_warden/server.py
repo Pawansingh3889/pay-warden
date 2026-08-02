@@ -154,6 +154,36 @@ def approve_purchase(attempt_id: str) -> dict:
 
 
 @mcp.tool()
+def reject_purchase(attempt_id: str, note: str = "") -> dict:
+    """Human decision: refuse an attempt that parked as needs_approval.
+
+    Mints nothing and calls Prava not at all. `note` is the person's own words
+    and is stored separately from the policy engine's reason, which stays
+    intact — a spender is owed the rule that fired *and* the answer they got,
+    and neither should be paraphrased into the other.
+
+    Refusing is deliberately its own verdict rather than leaving the row parked.
+    Silence and a decision look identical in an audit trail, and a spender
+    waiting on an answer nobody recorded is the worst outcome this whole flow
+    can produce.
+    """
+    attempt = _audit.get(attempt_id)
+    if attempt is None:
+        return {"error": f"No attempt {attempt_id!r}"}
+    if attempt["verdict"] != Verdict.NEEDS_APPROVAL.value:
+        return {"error": f"Attempt {attempt_id} is '{attempt['verdict']}', not pending approval"}
+    if not _audit.mark_rejected(attempt_id, note):
+        # Lost a race with an approval between the read and the write.
+        return {"error": f"Attempt {attempt_id} was decided by someone else first"}
+    return {
+        "attempt_id": attempt_id,
+        "rejected": True,
+        "note": note,
+        "reason": attempt["reason"],
+    }
+
+
+@mcp.tool()
 def get_audit_log(agent: str | None = None, limit: int = 20) -> list[dict]:
     """Recent purchase attempts (all agents, or one) with decisions and fired rules."""
     return _audit.recent(agent=agent, limit=limit)
