@@ -632,6 +632,26 @@ LIMITS = (
 )
 
 
+def attempted_hosts(conn: sqlite3.Connection, since: str) -> dict[str, dict[str, Any]]:
+    """Merchants agents actually tried, keyed by the host the engine matched on.
+
+    This is pay-warden's half of the readiness join: canibuy can rank merchants
+    by how many exist, only this trail can rank them by money someone tried to
+    spend there.
+    """
+    hosts: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(
+        "SELECT merchant_url, COUNT(*) AS n FROM attempts WHERE ts >= ? GROUP BY merchant_url",
+        (since,),
+    ):
+        host = host_of(row["merchant_url"])
+        if not host:
+            continue
+        entry = hosts.setdefault(host, {"attempts": 0})
+        entry["attempts"] += row["n"]
+    return hosts
+
+
 def build(
     conn: sqlite3.Connection,
     policy: Policy,
@@ -639,7 +659,7 @@ def build(
     now: datetime,
     window_days: int = 30,
     feed_limit: int = 200,
-    merchants: dict[str, Any] | None = None,
+    merchant_reader: Any = None,
 ) -> dict[str, Any]:
     """Everything the operator page renders, computed once.
 
@@ -647,9 +667,23 @@ def build(
     last 30 days, today's spend, the age of the oldest pending escalation —
     depends on it, and a metric layer that reads the clock itself cannot be
     tested at a fixed point.
+
+    `merchant_reader` is passed the attempted-host map and returns the readiness
+    panel. Injected rather than imported so this module has no opinion about
+    where merchant grades come from, and so the tests never need one.
     """
     caps = capabilities(conn)
     since = (now - timedelta(days=window_days)).isoformat()
+    merchants = (
+        merchant_reader(attempted_hosts(conn, since))
+        if merchant_reader is not None
+        else {"available": False, "reason": "not configured"}
+    )
+    if merchants.get("available"):
+        # The registry is real, but the attempt counts joined onto it come from
+        # this trail. The panel is only as real as its least real half, so it
+        # takes the audit provenance — and the panel says which half is which.
+        merchants["provenance"] = _provenance(conn, caps, "ts >= ?", (since,))
 
     return {
         "meta": {
@@ -666,7 +700,7 @@ def build(
         "rules": _rules(conn, policy, caps, since),
         "activation": _activation(conn, policy, caps),
         "agents": _agents(conn, policy, now),
-        "merchants": merchants or {"available": False, "reason": "not configured"},
+        "merchants": merchants,
         "feed": _feed(conn, caps, feed_limit),
         "limits": list(LIMITS),
     }
