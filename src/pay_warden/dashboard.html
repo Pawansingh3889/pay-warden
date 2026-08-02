@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pay-warden · audit trail</title>
+<title>pay-warden · operator</title>
 <style>
   :root {
     color-scheme: light;
@@ -17,6 +17,12 @@
     --good:      #0ca30c;
     --warning:   #fab219;
     --critical:  #d03b3b;
+    /* Ordinal ramp, one hue. For ordered magnitudes only — never for the
+       nominal rule names, where length already carries the value. */
+    --o1: #86b6ef; --o2: #5598e7; --o3: #2a78d6; --o4: #1c5cab;
+    /* Grades, borrowed from canibuy so a merchant graded C looks the same in
+       both products. The letter is always printed beside it. */
+    --g-a: #008076; --g-b: #006a61; --g-c: #00554e; --g-d: #00423c; --g-f: #00302c;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) {
@@ -27,6 +33,8 @@
       --text-1:    #ffffff;
       --text-2:    #c3c2b7;
       --text-3:    #8f8e85;
+      --o1: #9ec5f4; --o2: #5598e7; --o3: #2a78d6; --o4: #184f95;
+      --g-a: #72f4e5; --g-b: #55dbcb; --g-c: #34c1b3; --g-d: #00a89b; --g-f: #008e83;
     }
   }
   :root[data-theme="dark"] {
@@ -37,6 +45,8 @@
     --text-1:    #ffffff;
     --text-2:    #c3c2b7;
     --text-3:    #8f8e85;
+    --o1: #9ec5f4; --o2: #5598e7; --o3: #2a78d6; --o4: #184f95;
+    --g-a: #72f4e5; --g-b: #55dbcb; --g-c: #34c1b3; --g-d: #00a89b; --g-f: #008e83;
   }
 
   * { box-sizing: border-box; }
@@ -62,20 +72,39 @@
   h2 {
     font-size: 12px; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.07em; color: var(--text-3);
-    margin: 32px 0 12px;
+    margin: 32px 0 12px; display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
   }
 
-  /* KPI row — single headline numbers, no plot, so no hover layer. */
+  /* An annotation, deliberately unlike a status: outlined and monospace, never
+     filled, so it cannot be read as a verdict. Rides on every panel heading
+     whose numbers include synthetic rows, which means a crop that removes the
+     label also removes the number it qualifies. */
+  .chip {
+    font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    border: 1px dashed var(--text-3); border-radius: 5px;
+    padding: 3px 6px; color: var(--text-2);
+  }
+  .banner {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 10px 14px; margin: 14px 0 0;
+    border: 1px dashed var(--text-3); border-radius: 11px; color: var(--text-2);
+  }
+
+  .panel { background: var(--surface-1); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 10px; }
+  .caveat { font-size: 12px; color: var(--text-3); margin-top: 10px; }
+  .hero { font-size: 46px; font-weight: 620; letter-spacing: -0.02em; line-height: 1.05; }
+
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 20px; }
   .tile { background: var(--surface-1); border: 1px solid var(--border); border-radius: 11px; padding: 14px 16px; }
   .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); }
   .tile .value { font-size: 27px; font-weight: 620; margin-top: 5px; letter-spacing: -0.02em; }
   .tile .foot { font-size: 12px; color: var(--text-2); margin-top: 2px; }
 
-  /* Budget meters — magnitude against a known limit. */
   .meters { display: flex; flex-direction: column; gap: 11px; }
   .meter { background: var(--surface-1); border: 1px solid var(--border); border-radius: 11px; padding: 13px 16px; }
-  .meter .top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 9px; }
+  .meter .top { display: flex; align-items: baseline; gap: 10px; margin-bottom: 9px; flex-wrap: wrap; }
   .meter .agent { font-weight: 580; }
   .meter .detail { color: var(--text-2); font-size: 12px; }
   .track {
@@ -84,9 +113,19 @@
     overflow: hidden;
   }
   .fill { height: 100%; border-radius: 999px; transition: width .3s ease; }
-  /* Keeps a sliver of a very small spend visible — but never for zero spend,
-     which must read as an empty track rather than a trace of activity. */
   .fill.nonzero { min-width: 3px; }
+
+  /* Funnel: ordered stages, so an ordinal ramp. Gaps are surface-coloured so
+     the segments read as parts of one bar rather than three bars. */
+  .funnel { display: flex; height: 26px; border-radius: 7px; overflow: hidden; gap: 2px; background: var(--surface-0); }
+  .funnel i { display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 9px; font-size: 12px; color: var(--text-2); }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; }
+
+  /* Column chart: one series, one hue. The candidate in force is emphasised;
+     the rest recede, because emphasis is the encoding here, not category. */
+  .cols { display: flex; align-items: flex-end; gap: 3px; height: 64px; margin-top: 4px; }
+  .cols i { flex: 1; border-radius: 2px 2px 0 0; min-height: 1px; }
 
   table { width: 100%; border-collapse: collapse; }
   .scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 11px; background: var(--surface-1); }
@@ -97,6 +136,9 @@
   td.r { text-align: right; }
   .muted { color: var(--text-2); }
   .rule { color: var(--text-2); font-size: 12px; }
+  /* Magnitude inside a table row: length carries the value, so no colour scale.
+     Eleven rule names exceed any honest categorical palette anyway. */
+  .bar { height: 6px; border-radius: 999px; background: var(--o3); min-width: 2px; }
 
   /* Status is never carried by colour alone: dot + written label, ink text. */
   .verdict { display: inline-flex; align-items: center; gap: 7px; }
@@ -111,6 +153,9 @@
     border: 1px solid var(--border); border-radius: 7px; padding: 5px 9px;
   }
   .empty { padding: 28px 16px; color: var(--text-2); text-align: center; }
+  .limits { margin: 0; padding-left: 18px; color: var(--text-2); }
+  .limits li { margin-bottom: 7px; }
+  .limits .fix { color: var(--text-3); }
   a { color: inherit; text-decoration-color: var(--text-3); text-underline-offset: 2px; }
 </style>
 </head>
@@ -123,39 +168,82 @@
     <span class="sub num" id="stamp"></span>
     <button id="theme" type="button">theme</button>
   </header>
+  <div id="banner"></div>
 
+  <div id="hero"></div>
   <div class="tiles" id="tiles"></div>
+
+  <section id="escalation"></section>
+  <section id="threshold"></section>
+  <section id="rules"></section>
+  <section id="activation"></section>
+  <section id="merchants"></section>
 
   <h2>Daily budget used <span id="denom" class="sub" style="text-transform:none;letter-spacing:0"></span></h2>
   <div class="meters" id="meters"></div>
 
-  <h2>Attempts</h2>
-  <div class="filters">
-    <select id="fAgent"><option value="">all agents</option></select>
-    <select id="fVerdict">
-      <option value="">all verdicts</option>
-      <option value="allowed">allowed</option>
-      <option value="denied">denied</option>
-      <option value="needs_approval">needs approval</option>
-    </select>
-    <span class="sub" id="count"></span>
-  </div>
-  <div class="scroll">
-    <table>
-      <thead><tr>
-        <th>time</th><th>agent</th><th>merchant</th><th class="r">amount</th>
-        <th>verdict</th><th>rule</th><th>session</th>
-      </tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-  </div>
+  <section id="authorised"></section>
+
+  <h2 id="feedHead">Attempts</h2>
+  <section id="feed">
+    <div class="filters">
+      <select id="fAgent"><option value="">all agents</option></select>
+      <select id="fVerdict">
+        <option value="">all verdicts</option>
+        <option value="allowed">allowed</option>
+        <option value="denied">denied</option>
+        <option value="needs_approval">needs approval</option>
+      </select>
+      <span class="sub" id="count"></span>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>time</th><th>agent</th><th>merchant</th><th class="r">amount</th>
+          <th>verdict</th><th>rule</th><th>waited</th><th>session</th>
+        </tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="limits"></section>
 </div>
 
 <script>
 const LABEL = {allowed: "allowed", denied: "denied", needs_approval: "needs approval"};
-let state = {attempts: [], agents: [], summary: {}};
+const GRADE_VAR = {"A+": "--g-a", "A": "--g-a", "B": "--g-b", "C": "--g-c", "D": "--g-d", "F": "--g-f"};
+let state = {};
 
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+// A payment link is only ever followed by a person, so anything that is not a
+// real https URL is rendered as text. The audit column is written by more than
+// one process now.
+const safeUrl = u => /^https:\/\//i.test(String(u ?? "")) ? String(u) : "";
+
+const pct = n => n === null || n === undefined ? "—" : `${(n * 100).toFixed(1)}%`;
+const num = n => (n ?? 0).toLocaleString();
+// Whole units with separators: a tile is too narrow for pence, and pence on a
+// five-figure total is false precision anyway.
+const money = v => Number(v ?? 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+
+function duration(seconds) {
+  if (seconds === null || seconds === undefined) return "—";
+  if (seconds < 90) return `${seconds}s`;
+  if (seconds < 5400) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 172800) return `${(seconds / 3600).toFixed(1)} h`;
+  return `${(seconds / 86400).toFixed(1)} d`;
+}
+
+// The single renderer for every panel heading. No panel writes its own, which
+// is what makes the provenance chip impossible to forget or crop away from the
+// number it qualifies.
+function panelHead(title, prov) {
+  const label = prov && prov.label ? `<span class="chip">${esc(prov.label)}</span>` : "";
+  return `<h2>${esc(title)}${label}</h2>`;
+}
 
 document.getElementById("theme").onclick = () => {
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
@@ -163,18 +251,54 @@ document.getElementById("theme").onclick = () => {
   document.documentElement.setAttribute("data-theme", now === "dark" ? "light" : "dark");
 };
 
+function banner(meta) {
+  const p = meta.provenance || {};
+  if (!p.simulated) return "";
+  // "in this database", not "below": meta provenance counts the whole file,
+  // while the panels are windowed. Claiming they are the same number would be
+  // the first thing a careful reader checked, and it would not add up.
+  const what = p.simulated === p.total
+    ? `every one of the ${num(p.total)} attempts in this database is generated`
+    : `${num(p.simulated)} of ${num(p.total)} attempts in this database are generated`;
+  return `<div class="banner">
+    <span class="chip">${esc(p.label)}</span>
+    <span>${esc(what)} — produced by running the real policy engine at synthetic
+    timestamps, so the verdicts are reachable but the traffic never happened.</span>
+  </div>`;
+}
+
+function hero(s) {
+  const e = s.escalation || {};
+  if (!e.raised) {
+    return `${panelHead("Held for a human", e.provenance)}
+      <div class="panel"><div class="empty">Nothing has hit the approval threshold in this
+      window, so there is no release rate to report yet.</div></div>`;
+  }
+  return `${panelHead("Held for a human", e.provenance)}
+    <div class="panel">
+      <div class="hero">${esc(pct(e.release_rate))}</div>
+      <div class="sub">of purchases the threshold parked were later released by a person —
+        ${num(e.released)} of ${num(e.raised)}, median wait ${esc(duration((e.latency || {}).median_s))}</div>
+      <div class="caveat">A lower bound, not an approval rate: pay-warden records no decline,
+        so a person who refused and a person who has not looked leave identical rows.</div>
+    </div>`;
+}
+
 function tiles(s) {
-  const minted = Object.entries(s.minted || {});
-  const volume = minted.length
-    ? minted.map(([c, v]) => `${v} ${c}`).join(" · ")
-    : "none yet";
-  return [
-    ["attempts", s.attempts, "recorded in the audit trail"],
-    ["allowed", s.allowed, `${s.sessions} Prava session${s.sessions === 1 ? "" : "s"} minted`],
-    ["denied", s.denied, "never reached Prava"],
-    ["escalated", s.needs_approval, "waiting on a human"],
-    ["minted volume", volume, "by currency"],
-  ].map(([label, value, foot]) => `
+  const e = s.escalation || {}, a = s.activation || {}, m = s.merchants || {}, t = s.totals || {};
+  const lat = e.latency || {};
+  const rows = [
+    ["escalations raised", num(e.raised), `${num(e.pending)} still waiting`],
+    ["release rate", pct(e.release_rate), "pending is not rejected"],
+    ["median time to release", duration(lat.median_s),
+      lat.available ? `n = ${num(lat.n)}, ${num(lat.untimed)} untimed` : "not instrumented here"],
+    ["friction cost", money(e.friction_cost),
+      `${esc(s.meta.base_currency)} held, then released`],
+    ["unregistered identities", num(a.identities), `${num(a.stuck)} never registered`],
+    ["agent-ready merchants", m.available ? pct(m.buyable_share) : "—",
+      m.available ? `${num(m.registry.graded)} graded` : "registry not configured"],
+  ];
+  return rows.map(([label, value, foot]) => `
     <div class="tile">
       <div class="label">${esc(label)}</div>
       <div class="value num">${esc(value)}</div>
@@ -182,10 +306,188 @@ function tiles(s) {
     </div>`).join("");
 }
 
+function escalationPanel(e, meta) {
+  if (!e.raised) return "";
+  const released = e.released, pending = e.pending;
+  const total = released + pending || 1;
+  const seg = (n, colour, label) =>
+    n ? `<i style="width:${(n / total * 100).toFixed(1)}%;background:var(${colour})"
+         title="${esc(label)}: ${num(n)}"></i>` : "";
+  const load = (e.load_by_day || []).slice(-30);
+  const peak = Math.max(1, ...load.map(d => d.n));
+  return `${panelHead("What happens when a limit bites", e.provenance)}
+    <div class="grid2">
+      <div class="panel">
+        <div class="funnel">
+          ${seg(released, "--o3", "released")}
+          ${seg(pending, "--o1", "still waiting")}
+        </div>
+        <div class="legend">
+          <span><span class="swatch" style="background:var(--o3)"></span>released ${num(released)}</span>
+          <span><span class="swatch" style="background:var(--o1)"></span>still waiting ${num(pending)}</span>
+        </div>
+        <div class="caveat">
+          Value held right now: <span class="num">${esc(e.value_held_now)} ${esc(meta.base_currency)}</span>.
+          Oldest unanswered: ${esc(duration(e.oldest_pending_s))}.
+          ${e.unpriceable_rows ? `${num(e.unpriceable_rows)} row(s) excluded — no rate for their currency.` : ""}
+        </div>
+      </div>
+      <div class="panel">
+        <div class="sub">Reviews per day — the cost of a lower threshold</div>
+        <div class="cols">
+          ${load.map(d => `<i style="height:${(d.n / peak * 100).toFixed(0)}%;background:var(--o3)"
+             title="${esc(d.day)}: ${num(d.n)}"></i>`).join("") ||
+            `<span class="muted">no escalations in this window</span>`}
+        </div>
+        <div class="caveat">Each column is one UTC day; the tallest is ${num(peak)}.</div>
+      </div>
+    </div>`;
+}
+
+function thresholdPanel(t, meta) {
+  if (!t.curve || !t.curve.length) return "";
+  const peak = Math.max(...t.curve.map(p => p.escalations), 1);
+  return `${panelHead("Where the threshold could sit", t.provenance)}
+    <div class="panel">
+      <div class="sub">Replayed against the ${num(t.population)} purchases that actually reached
+        the final gate. Currently <span class="num">${esc(t.current)} ${esc(meta.base_currency)}</span>.</div>
+      <div class="cols">
+        ${t.curve.map(p => `<i style="height:${(p.escalations / peak * 100).toFixed(0)}%;
+           background:var(${p.current ? "--o4" : "--o1"})"
+           title="${esc(p.threshold)}: ${num(p.escalations)} escalations"></i>`).join("")}
+      </div>
+      <div class="scroll" style="margin-top:12px">
+        <table>
+          <thead><tr><th>threshold</th><th class="r">escalations</th><th class="r">share</th><th class="r">value held</th></tr></thead>
+          <tbody>${t.curve.map(p => `<tr>
+            <td class="num">${esc(p.threshold)}${p.current ? " <span class='muted'>(in force)</span>" : ""}</td>
+            <td class="r num">${num(p.escalations)}</td>
+            <td class="r num">${esc(pct(p.share))}</td>
+            <td class="r num">${esc(p.value_held)}</td></tr>`).join("")}</tbody>
+        </table>
+      </div>
+      <div class="caveat">Not a forecast — it re-runs the same comparison the engine makes,
+        against the amounts that reached it. First-order only: a higher threshold consumes the
+        daily budget sooner, and those knock-on denials are not modelled.</div>
+    </div>`;
+}
+
+function rulesPanel(r) {
+  const stopped = r.stopped_by || [];
+  const ad = r.adaptation || {};
+  if (!stopped.length && !ad.denied) return "";
+  const peak = Math.max(1, ...stopped.map(s => s.n));
+  return `${panelHead("What stopped a purchase", r.provenance)}
+    <div class="grid2">
+      <div class="panel">
+        <div class="scroll">
+          <table>
+            <thead><tr><th>stopped by</th><th class="r">n</th><th style="width:35%"></th></tr></thead>
+            <tbody>${stopped.map(s => `<tr>
+              <td class="rule">${esc(s.rule_id)}${s.known ? "" : " <span class='chip'>outside policy</span>"}</td>
+              <td class="r num">${num(s.n)}</td>
+              <td><div class="bar" style="width:${(s.n / peak * 100).toFixed(0)}%"></div></td>
+            </tr>`).join("") || `<tr><td colspan="3" class="empty">Nothing was denied.</td></tr>`}</tbody>
+          </table>
+        </div>
+        <div class="caveat">Rules are evaluated in order and the first match wins, so a request
+          that broke two rules is counted only under the one that stopped it. Not a violation
+          frequency.</div>
+      </div>
+      <div class="panel">
+        <div class="sub">Did a block change the purchase, or cancel it?</div>
+        <div class="hero" style="font-size:34px">${num(ad.followed_by_smaller_allowed)} <span
+          class="sub" style="font-size:14px">of ${num(ad.denied)}</span></div>
+        <div class="sub">blocked attempts were followed within ${num(ad.window_minutes)} minutes by a
+          smaller successful purchase at the same merchant.</div>
+        <div class="caveat">A cohort count, not a rate and not causation. The constraints make
+          coincidence unlikely; they do not rule it out.</div>
+      </div>
+    </div>`;
+}
+
+function activationPanel(a, meta) {
+  if (!a.identities) return "";
+  return `${panelHead("Identities the policy had never heard of", a.provenance)}
+    <div class="panel">
+      <div class="sub">${num(a.identities)} identities · ${num(a.stuck)} never registered ·
+        ${num(a.recovered)} later did${a.median_seconds_to_registration
+          ? `, median ${esc(duration(a.median_seconds_to_registration))} to do it` : ""} ·
+        <span class="num">${esc(a.value_bounced)} ${esc(meta.base_currency)}</span> bounced</div>
+      <div class="scroll" style="margin-top:10px">
+        <table>
+          <thead><tr><th>identity</th><th>tenant</th><th class="r">denials</th><th class="r">merchants</th><th>state</th></tr></thead>
+          <tbody>${(a.top || []).map(i => `<tr>
+            <td class="num">${esc(i.agent)}</td>
+            <td class="muted">${esc(i.tenant)}</td>
+            <td class="r num">${num(i.unknown_n)}</td>
+            <td class="r num">${num(i.merchants)}</td>
+            <td>${i.recovered ? "registered later" : "<span class='muted'>never registered</span>"}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>
+      <div class="caveat">Each of these is either an integration that never registered or a caller
+        this engine correctly refused. The audit trail cannot tell them apart, and neither can this
+        panel. Tenant is a prefix read off an opaque string, not enforced tenancy.</div>
+    </div>`;
+}
+
+function merchantsPanel(m) {
+  if (!m.available) {
+    return `${panelHead("Merchant readiness", null)}
+      <div class="panel"><span class="muted">${esc(m.reason)}.</span>
+      ${m.how ? ` <span class="muted">${esc(m.how)}.</span>` : ""}</div>`;
+  }
+  const graded = m.registry.graded || 1;
+  const age = m.probed_at
+    ? (Date.now() - Date.parse(m.probed_at)) / 3600000 : null;
+  const stale = age !== null && age > m.stale_after_hours;
+  return `${panelHead("Merchant readiness", m.provenance)}
+    <div class="panel">
+      <div class="sub">Registry probed ${esc((m.probed_at || "").slice(0, 16).replace("T", " "))} UTC${
+        age !== null ? ` · ${esc(duration(Math.round(age * 3600)))} ago` : ""}${
+        stale ? " · <span class='chip'>stale</span>" : ""} ·
+        ${num(m.registry.graded)} graded of ${num(m.registry.merchants)} in the registry</div>
+      <div class="funnel" style="margin-top:10px">
+        ${(m.by_grade || []).map(g => `<i style="width:${(g.merchants / graded * 100).toFixed(1)}%;
+          background:var(${GRADE_VAR[g.grade] || "--g-f"})"
+          title="${esc(g.grade)}: ${num(g.merchants)} merchants, ${num(g.attempts)} attempts"></i>`).join("")}
+      </div>
+      <div class="legend">${(m.by_grade || []).map(g =>
+        `<span><span class="swatch" style="background:var(${GRADE_VAR[g.grade] || "--g-f"})"></span>${
+          esc(g.grade)} — ${num(g.merchants)} merchant(s), ${num(g.attempts)} attempt(s)</span>`).join("")}</div>
+      <div class="sub" style="margin-top:12px">${num(m.coverage.matched)} of
+        ${num(m.coverage.attempted_hosts)} merchants your agents attempted are in the registry.</div>
+      ${(m.work_queue || []).length ? `<div class="scroll" style="margin-top:10px">
+        <table>
+          <thead><tr><th>blocked by</th><th>owner</th><th class="r">merchants</th><th class="r">attempts</th><th>fix</th></tr></thead>
+          <tbody>${m.work_queue.slice(0, 6).map(w => `<tr>
+            <td class="rule">${esc(w.failure_class)}</td>
+            <td class="muted">${esc(w.owner)}</td>
+            <td class="r num">${num(w.merchants_blocked)}</td>
+            <td class="r num">${num(w.attempts_blocked)}</td>
+            <td class="muted" style="white-space:normal">${esc(w.fix)}</td></tr>`).join("")}</tbody>
+        </table></div>` : ""}
+      <div class="caveat">Grades come from the readiness registry and are real; the attempt
+        counts beside them come from the trail above, which is why this panel carries whatever
+        label that trail does. A grade is a probe result at a point in time, not a contract${
+        (m.drift || []).length ? ` — ${num(m.drift.length)} merchant(s) graded differently on their
+        last two probes` : ""}. It says nothing about whether your agent succeeded there: this
+        trail records intent, not outcome.</div>
+    </div>`;
+}
+
 function meters(agents) {
-  if (!agents.length) return `<div class="empty">No agents in policy.</div>`;
+  if (!agents.length) return `<div class="empty">No agents have attempted anything yet.</div>`;
   return agents.map(a => {
-    const pct = Math.min(1, a.used);
+    if (!a.registered) {
+      return `<div class="meter">
+        <div class="top">
+          <span class="agent num">${esc(a.agent)}</span>
+          <span class="detail">not in policy — every purchase is denied <span class="num">unknown-agent</span></span>
+        </div></div>`;
+    }
+    const used = Math.min(1, a.used || 0);
     // Utilisation band. The percentage is always written out beside the bar,
     // so the colour reinforces the number rather than replacing it.
     const colour = a.used >= 0.95 ? "var(--critical)" : a.used >= 0.75 ? "var(--warning)" : "var(--good)";
@@ -194,46 +496,71 @@ function meters(agents) {
         <div class="top">
           <span class="agent">${esc(a.agent)}</span>
           <span class="detail num">${esc(a.spent)} / ${esc(a.budget)}</span>
-          <span class="detail num">${Math.round(a.used * 100)}%</span>
+          <span class="detail num">${Math.round((a.used || 0) * 100)}%</span>
           <span class="spacer"></span>
           <span class="detail num">cap ${esc(a.cap)} · ${a.in_window}/${a.velocity_max} in window</span>
         </div>
         <div class="track" title="${esc(a.agent)}: ${esc(a.spent)} of ${esc(a.budget)} spent today">
-          <div class="fill${pct > 0 ? " nonzero" : ""}" style="width:${(pct * 100).toFixed(1)}%;background:${colour}"></div>
+          <div class="fill${used > 0 ? " nonzero" : ""}" style="width:${(used * 100).toFixed(1)}%;background:${colour}"></div>
         </div>
       </div>`;
   }).join("");
 }
 
-function rows() {
+function authorisedPanel(t) {
+  const entries = Object.entries(t.authorised || {});
+  return `${panelHead("Value authorised", null)}
+    <div class="panel">
+      <div class="hero" style="font-size:30px">${entries.length
+        ? entries.map(([c, v]) => `${esc(v)} <span class="sub" style="font-size:14px">${esc(c)}</span>`).join(" · ")
+        : "none yet"}</div>
+      <div class="caveat">Payment sessions created, kept per currency because no exchange rate is
+        stored. Authorised is not collected: nothing reports back whether a session was ever paid.</div>
+    </div>`;
+}
+
+function feedRows() {
+  const feed = state.feed || {rows: [], total: 0};
   const agent = document.getElementById("fAgent").value;
   const verdict = document.getElementById("fVerdict").value;
-  const shown = state.attempts.filter(a =>
+  const shown = feed.rows.filter(a =>
     (!agent || a.agent === agent) && (!verdict || a.verdict === verdict));
 
   document.getElementById("count").textContent =
-    `${shown.length} of ${state.attempts.length}`;
+    `${shown.length} shown · most recent ${feed.rows.length} of ${num(feed.total)} recorded`;
 
   if (!shown.length) {
     document.getElementById("rows").innerHTML =
-      `<tr><td colspan="7" class="empty">No attempts match.</td></tr>`;
+      `<tr><td colspan="8" class="empty">No attempts match.</td></tr>`;
     return;
   }
   document.getElementById("rows").innerHTML = shown.map(a => {
     const host = (a.merchant_url || "").replace(/^https?:\/\//, "");
-    const session = a.payment_url
-      ? `<a href="${esc(a.payment_url)}" target="_blank" rel="noopener" class="num">${esc(a.session_id)}</a>`
+    const url = safeUrl(a.payment_url);
+    const session = url
+      ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="num">${esc(a.session_id)}</a>`
+      : a.session_id ? `<span class="num">${esc(a.session_id)}</span>`
       : `<span class="muted">&mdash;</span>`;
+    const waited = a.released_at && a.ts
+      ? duration(Math.max(0, Math.round((Date.parse(a.released_at) - Date.parse(a.ts)) / 1000)))
+      : "—";
     return `<tr>
       <td class="num muted">${esc((a.ts || "").slice(11, 19))}</td>
-      <td>${esc(a.agent)}</td>
+      <td>${esc(a.agent)}${a.source === "simulated" ? ` <span class="chip">sim</span>` : ""}</td>
       <td>${esc(a.merchant_name)} <span class="muted">${esc(host)}</span></td>
       <td class="r num">${esc(a.total_amount)} ${esc(a.currency)}</td>
       <td><span class="verdict ${esc(a.verdict)}"><span class="dot"></span>${esc(LABEL[a.verdict] || a.verdict)}</span></td>
       <td class="rule" title="${esc(a.reason)}">${esc(a.rule_id)}</td>
+      <td class="num muted">${esc(waited)}</td>
       <td>${session}</td>
     </tr>`;
   }).join("");
+}
+
+function limitsPanel(limits) {
+  return `${panelHead("What this page cannot tell you", null)}
+    <div class="panel"><ul class="limits">${(limits || []).map(l =>
+      `<li>${esc(l.text)} <span class="fix">${esc(l.fix)}</span></li>`).join("")}</ul></div>`;
 }
 
 async function refresh() {
@@ -242,29 +569,40 @@ async function refresh() {
     if (!r.ok) return;
     state = await r.json();
   } catch { return; }
+  if (!state.meta) return;
 
-  document.getElementById("tiles").innerHTML = tiles(state.summary);
-  document.getElementById("meters").innerHTML = meters(state.agents);
+  document.getElementById("banner").innerHTML = banner(state.meta);
+  document.getElementById("hero").innerHTML = hero(state);
+  document.getElementById("tiles").innerHTML = tiles(state);
+  document.getElementById("escalation").innerHTML = escalationPanel(state.escalation, state.meta);
+  document.getElementById("threshold").innerHTML = thresholdPanel(state.threshold, state.meta);
+  document.getElementById("rules").innerHTML = rulesPanel(state.rules);
+  document.getElementById("activation").innerHTML = activationPanel(state.activation, state.meta);
+  document.getElementById("merchants").innerHTML = merchantsPanel(state.merchants);
+  document.getElementById("meters").innerHTML = meters(state.agents || []);
+  document.getElementById("authorised").innerHTML = authorisedPanel(state.totals || {});
+  document.getElementById("limits").innerHTML = limitsPanel(state.limits);
+
   // Budgets are enforced in one base currency; say which, so the bare numbers
   // on the meters are not mistaken for the currency each purchase used.
   document.getElementById("denom").textContent =
-    state.base_currency ? `· amounts converted to ${state.base_currency}` : "";
+    state.meta.base_currency ? `· since 00:00 UTC, converted to ${state.meta.base_currency}` : "";
 
   const sel = document.getElementById("fAgent");
-  const names = [...new Set(state.attempts.map(a => a.agent))].sort();
+  const names = [...new Set((state.feed.rows || []).map(a => a.agent))].sort();
   if (sel.options.length - 1 !== names.length) {
     const keep = sel.value;
     sel.innerHTML = `<option value="">all agents</option>` +
       names.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
     sel.value = keep;
   }
-  rows();
+  feedRows();
   document.getElementById("stamp").textContent =
     new Date().toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
 }
 
-document.getElementById("fAgent").onchange = rows;
-document.getElementById("fVerdict").onchange = rows;
+document.getElementById("fAgent").onchange = feedRows;
+document.getElementById("fVerdict").onchange = feedRows;
 refresh();
 setInterval(refresh, 5000);
 </script>

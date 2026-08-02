@@ -115,7 +115,7 @@ class Policy:
                 f"cannot check it against limits",
             )
 
-        host = urlparse(req.merchant_url).netloc.lower().removeprefix("www.")
+        host = host_of(req.merchant_url)
         for pattern in self.merchant_deny:
             if fnmatch(host, pattern.lower()):
                 return _deny("merchant-deny", f"Merchant '{host}' matches deny pattern '{pattern}'")
@@ -156,6 +156,17 @@ class Policy:
             )
 
         return Decision(verdict=Verdict.ALLOWED, rule_id="pass", reason="All policy rules passed")
+
+
+def host_of(url: str) -> str:
+    """The registrable host a merchant rule matches against.
+
+    Extracted so anything reporting on merchants joins on exactly the string the
+    engine judged against. Two implementations of "which merchant is this" would
+    eventually disagree, and the disagreement would be invisible — a coverage
+    number quietly missing every `www.` host.
+    """
+    return urlparse(url).netloc.lower().removeprefix("www.")
 
 
 def _deny(rule_id: str, reason: str) -> Decision:
