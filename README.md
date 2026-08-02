@@ -64,7 +64,7 @@ tight that a human becomes the bottleneck, or so loose that the control is theat
 
 | Panel | What it answers |
 |---|---|
-| Held for a human | of purchases the threshold parked, how many a person later released, and how long they took |
+| Held for a human | of the escalations a person answered, how many were released — and how long a yes and a no each took |
 | Where the threshold could sit | every candidate threshold replayed against the purchases that actually reached the gate |
 | What stopped a purchase | which rule ended each denied request, and whether a block reshaped the purchase or cancelled it |
 | Identities the policy never heard of | `unknown-agent` denials, and which of them later registered |
@@ -75,11 +75,14 @@ rules keep the money honest: sums are `Decimal` and never SQLite's float `SUM()`
 currency the policy cannot price are excluded and counted rather than blended; and
 `total_amount` is never added across currencies, because no exchange rate is stored.
 
-Two things the page refuses to say. It says **value authorised**, never GMV or revenue — a
-minted session means a payment page existed, never that money moved. And release rate is a
-**lower bound**, because there is no rejection state: a person who refused an escalation
-leaves a row identical to one nobody has looked at. The last panel lists five more limits
-of this kind, each with its fix.
+One thing the page refuses to say: **value authorised**, never GMV or revenue — a minted
+session means a payment page existed, never that money moved. The last panel lists five
+more limits of this kind, each with its fix.
+
+Release rate is measured over what was **answered**, not over what was raised. That is a
+real denominator because refusing is its own verdict — `rejected`, produced only by a
+person and never by the rules. Anything still parked is reported beside it rather than
+folded in, because an unanswered request is not a soft no.
 
 ### Something to look at
 
@@ -110,7 +113,8 @@ Register in Claude Code / any MCP client:
 |---|---|
 | `preview_purchase` | Dry-run a purchase against policy — no session minted |
 | `request_purchase` | Policy check → if allowed, mint a Prava session, return the payment URL |
-| `approve_purchase` | Human override: release a request that escalated to `needs_approval` |
+| `approve_purchase` | Human decision: release a request that escalated to `needs_approval` |
+| `reject_purchase` | Human decision: refuse one. Mints nothing, and is terminal |
 | `get_audit_log` | Recent attempts with decisions and fired rules |
 
 ## Policy

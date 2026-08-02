@@ -82,6 +82,16 @@ UNGRADED_MERCHANTS = (
 )
 BLOCKED_MERCHANT = ("Lucky Spin", "https://parlour.casino.example/chips")
 
+# What a person types when they refuse. Stored apart from the policy's reason,
+# which stays exactly as the engine worded it.
+NOTES = (
+    "we already have one",
+    "not this month",
+    "cheaper option please",
+    "ask me before anything this size",
+    "wrong merchant",
+)
+
 ITEMS = ("coffee beans", "printer paper", "hand soap", "usb cable", "notebook",
          "desk lamp", "keyboard", "winter coat", "running shoes", "headphones")
 
@@ -257,30 +267,48 @@ def _row(
     when: datetime,
     ledger: Ledger,
 ) -> tuple:
-    """One INSERT tuple, with the release already decided.
+    """One INSERT tuple, with the human's answer already decided.
 
-    The verdict written for a released escalation is `allowed` while `rule_id`
-    stays `human-approval` — exactly what `mark_released` leaves behind, and the
-    only fingerprint the dashboard has for "held, then let through".
+    An escalation ends one of three ways, and each is written exactly as the
+    store would leave it. `rule_id` stays `human-approval` throughout, because
+    neither `mark_released` nor `mark_rejected` touches it — so within the
+    escalation population the verdict alone says which way it went.
     """
     verdict = decision.verdict.value
     rule_id = decision.rule_id
-    released_at = ""
+    answered_at = ""
+    answer_note = ""
     session_id = None
 
     if decision.verdict is Verdict.ALLOWED:
         session_id = f"ses_sim_{uuid.uuid4().hex[:10]}"
         if base is not None:
             ledger.add(request.agent, when, base)
-    elif decision.verdict is Verdict.NEEDS_APPROVAL and rng.random() < 0.70:
-        answered = when + _release_delay(rng)
-        verdict = Verdict.ALLOWED.value
-        released_at = answered.isoformat()
-        session_id = f"ses_sim_{uuid.uuid4().hex[:10]}"
-        # At the release moment, not the request moment. Getting this wrong
-        # would hide the late-release budget behaviour rather than reproduce it.
-        if base is not None:
-            ledger.add(request.agent, answered, base)
+    elif decision.verdict is Verdict.NEEDS_APPROVAL:
+        answer = rng.random()
+        if answer < 0.62:
+            answered = when + _release_delay(rng)
+            verdict = Verdict.ALLOWED.value
+            answered_at = answered.isoformat()
+            session_id = f"ses_sim_{uuid.uuid4().hex[:10]}"
+            # At the release moment, not the request moment. Getting this wrong
+            # would hide the late-release budget behaviour rather than
+            # reproduce it.
+            if base is not None:
+                ledger.add(request.agent, answered, base)
+        elif answer < 0.84:
+            # Refused. No session, and nothing joins the ledger — a rejection is
+            # not a purchase, and the budget must be untouched by one. People
+            # also take longer to say no than to say yes, so the delay is drawn
+            # twice and the longer one kept.
+            verdict = Verdict.REJECTED.value
+            answered_at = (
+                when + max(_release_delay(rng), _release_delay(rng))
+            ).isoformat()
+            answer_note = rng.choice(NOTES)
+        # The remainder stay `needs_approval`: a queue nobody has answered yet,
+        # which is a real state and the reason release rate is reported over
+        # what was answered rather than over what was raised.
 
     return (
         uuid.uuid4().hex[:12],
@@ -299,7 +327,8 @@ def _row(
         request.merchant_country,
         "[]",
         str(base if base is not None else request.total_amount),
-        released_at,
+        answered_at,
+        answer_note,
         "simulated",
     )
 
@@ -363,8 +392,8 @@ def main(argv: list[str] | None = None) -> int:
     conn.executemany(
         "INSERT INTO attempts (id, ts, agent, merchant_name, merchant_url, total_amount,"
         " currency, verdict, rule_id, reason, session_id, payment_url, merchant_country,"
-        " products, base_amount, released_at, source)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " products, base_amount, answered_at, answer_note, source)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         rows,
     )
     conn.commit()

@@ -146,6 +146,10 @@
   .allowed .dot { background: var(--good); }
   .denied .dot { background: var(--critical); }
   .needs_approval .dot { background: var(--warning); }
+  /* Slate, not red: somebody chose this. A denial is the engine refusing under
+     a rule; a rejection is a person saying no, and conflating the two would
+     tell a spender their sponsor's answer was a system error. */
+  .rejected .dot { background: var(--text-3); }
 
   .filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
   select {
@@ -200,7 +204,7 @@
       <table>
         <thead><tr>
           <th>time</th><th>agent</th><th>merchant</th><th class="r">amount</th>
-          <th>verdict</th><th>rule</th><th>waited</th><th>session</th>
+          <th>verdict</th><th>rule</th><th>answered in</th><th>session</th>
         </tr></thead>
         <tbody id="rows"></tbody>
       </table>
@@ -211,7 +215,8 @@
 </div>
 
 <script>
-const LABEL = {allowed: "allowed", denied: "denied", needs_approval: "needs approval"};
+const LABEL = {allowed: "allowed", denied: "denied", needs_approval: "needs approval",
+               rejected: "rejected"};
 const GRADE_VAR = {"A+": "--g-a", "A": "--g-a", "B": "--g-b", "C": "--g-c", "D": "--g-d", "F": "--g-f"};
 let state = {};
 
@@ -277,10 +282,12 @@ function hero(s) {
   return `${panelHead("Held for a human", e.provenance)}
     <div class="panel">
       <div class="hero">${esc(pct(e.release_rate))}</div>
-      <div class="sub">of purchases the threshold parked were later released by a person —
-        ${num(e.released)} of ${num(e.raised)}, median wait ${esc(duration((e.latency || {}).median_s))}</div>
-      <div class="caveat">A lower bound, not an approval rate: pay-warden records no decline,
-        so a person who refused and a person who has not looked leave identical rows.</div>
+      <div class="sub">of the escalations a person answered were released —
+        ${num(e.released)} released, ${num(e.rejected)} refused, median wait
+        ${esc(duration((e.latency || {}).median_s))}</div>
+      <div class="caveat">Answered, not raised: ${num(e.pending)} more are still waiting and are
+        excluded, because an unanswered request is not a soft no. Of everything the threshold
+        parked, ${esc(pct(e.answered_rate))} has been decided either way.</div>
     </div>`;
 }
 
@@ -288,9 +295,9 @@ function tiles(s) {
   const e = s.escalation || {}, a = s.activation || {}, m = s.merchants || {}, t = s.totals || {};
   const lat = e.latency || {};
   const rows = [
-    ["escalations raised", num(e.raised), `${num(e.pending)} still waiting`],
-    ["release rate", pct(e.release_rate), "pending is not rejected"],
-    ["median time to release", duration(lat.median_s),
+    ["escalations raised", num(e.raised), `${num(e.rejected)} refused · ${num(e.pending)} waiting`],
+    ["release rate", pct(e.release_rate), `of ${num(e.answered)} answered`],
+    ["median time to answer", duration(lat.median_s),
       lat.available ? `n = ${num(lat.n)}, ${num(lat.untimed)} untimed` : "not instrumented here"],
     ["friction cost", money(e.friction_cost),
       `${esc(s.meta.base_currency)} held, then released`],
@@ -308,25 +315,33 @@ function tiles(s) {
 
 function escalationPanel(e, meta) {
   if (!e.raised) return "";
-  const released = e.released, pending = e.pending;
-  const total = released + pending || 1;
+  const released = e.released, rejected = e.rejected, pending = e.pending;
+  const total = released + rejected + pending || 1;
   const seg = (n, colour, label) =>
     n ? `<i style="width:${(n / total * 100).toFixed(1)}%;background:var(${colour})"
          title="${esc(label)}: ${num(n)}"></i>` : "";
+  const lat = e.latency || {};
   const load = (e.load_by_day || []).slice(-30);
   const peak = Math.max(1, ...load.map(d => d.n));
   return `${panelHead("What happens when a limit bites", e.provenance)}
     <div class="grid2">
       <div class="panel">
         <div class="funnel">
-          ${seg(released, "--o3", "released")}
+          ${seg(released, "--o4", "released")}
+          ${seg(rejected, "--o2", "refused by a person")}
           ${seg(pending, "--o1", "still waiting")}
         </div>
         <div class="legend">
-          <span><span class="swatch" style="background:var(--o3)"></span>released ${num(released)}</span>
+          <span><span class="swatch" style="background:var(--o4)"></span>released ${num(released)}</span>
+          <span><span class="swatch" style="background:var(--o2)"></span>refused ${num(rejected)}</span>
           <span><span class="swatch" style="background:var(--o1)"></span>still waiting ${num(pending)}</span>
         </div>
+        <div class="sub" style="margin-top:12px">
+          Median wait to be released: <span class="num">${esc(duration(lat.median_released_s))}</span> ·
+          to be refused: <span class="num">${esc(duration(lat.median_rejected_s))}</span>
+        </div>
         <div class="caveat">
+          Both are a wait a spender actually sat through, which is why refusals are timed too.
           Value held right now: <span class="num">${esc(e.value_held_now)} ${esc(meta.base_currency)}</span>.
           Oldest unanswered: ${esc(duration(e.oldest_pending_s))}.
           ${e.unpriceable_rows ? `${num(e.unpriceable_rows)} row(s) excluded — no rate for their currency.` : ""}
@@ -541,8 +556,8 @@ function feedRows() {
       ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="num">${esc(a.session_id)}</a>`
       : a.session_id ? `<span class="num">${esc(a.session_id)}</span>`
       : `<span class="muted">&mdash;</span>`;
-    const waited = a.released_at && a.ts
-      ? duration(Math.max(0, Math.round((Date.parse(a.released_at) - Date.parse(a.ts)) / 1000)))
+    const waited = a.answered_at && a.ts
+      ? duration(Math.max(0, Math.round((Date.parse(a.answered_at) - Date.parse(a.ts)) / 1000)))
       : "—";
     return `<tr>
       <td class="num muted">${esc((a.ts || "").slice(11, 19))}</td>

@@ -65,13 +65,13 @@ def plant(
     rule_id="pass",
     session="ses_1",
     base=None,
-    released_at="",
+    answered_at="",
     source="live",
 ):
     conn.execute(
         "INSERT INTO attempts (id, ts, agent, merchant_name, merchant_url, total_amount,"
         " currency, verdict, rule_id, reason, session_id, payment_url, merchant_country,"
-        " products, base_amount, released_at, source)"
+        " products, base_amount, answered_at, source)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             ident,
@@ -89,7 +89,7 @@ def plant(
             "US",
             "[]",
             base if base is not None else total,
-            released_at,
+            answered_at,
             source,
         ),
     )
@@ -146,18 +146,65 @@ def test_money_aggregates_exclude_currencies_the_policy_cannot_price(db, policy)
 # --- the escalation funnel ----------------------------------------------------
 
 
-def test_release_rate_treats_pending_as_unresolved_not_rejected(db, policy):
-    """There is no rejection state, so a human who said no and a human who has
-    not looked leave identical rows. The rate is a lower bound."""
+def test_release_rate_is_measured_over_what_was_answered(db, policy):
+    """A refusal is now its own verdict, so the denominator is real. Anything
+    still parked stays out of it: an unanswered request is not a soft no."""
     plant(db, ident="held", verdict="needs_approval", rule_id="human-approval", session=None)
     plant(db, ident="out", verdict="allowed", rule_id="human-approval")
+    plant(db, ident="no", verdict="rejected", rule_id="human-approval", session=None)
 
     escalation = insights.build(db, policy, now=NOW)["escalation"]
 
-    assert escalation["raised"] == 2
+    assert escalation["raised"] == 3
     assert escalation["released"] == 1
+    assert escalation["rejected"] == 1
     assert escalation["pending"] == 1
     assert escalation["release_rate"] == 0.5
+    assert escalation["answered_rate"] == 2 / 3
+
+
+def test_a_refusal_is_not_friction_cost(db, policy):
+    """Friction cost is money a limit delayed and then let through. Money a
+    person refused was not delayed — it was stopped, by somebody's decision."""
+    plant(db, ident="out", verdict="allowed", rule_id="human-approval", base="40.00")
+    plant(db, ident="no", verdict="rejected", rule_id="human-approval", base="500.00", session=None)
+
+    assert insights.build(db, policy, now=NOW)["escalation"]["friction_cost"] == "40.00"
+
+
+def test_a_refusal_is_not_still_held(db, policy):
+    """Value held is what is waiting on somebody. A refused request is not."""
+    plant(db, ident="no", verdict="rejected", rule_id="human-approval", base="500.00", session=None)
+
+    assert insights.build(db, policy, now=NOW)["escalation"]["value_held_now"] == "0.00"
+
+
+def test_latency_times_refusals_as_well_as_releases(db, policy):
+    """Timing only the yeses would report how fast people approve and stay
+    silent about how long they take to refuse. A slow no costs the same wait."""
+    plant(
+        db,
+        ident="yes",
+        verdict="allowed",
+        rule_id="human-approval",
+        ts=NOW - timedelta(hours=2),
+        answered_at=(NOW - timedelta(hours=1)).isoformat(),
+    )
+    plant(
+        db,
+        ident="no",
+        verdict="rejected",
+        rule_id="human-approval",
+        session=None,
+        ts=NOW - timedelta(hours=5),
+        answered_at=(NOW - timedelta(hours=2)).isoformat(),
+    )
+
+    latency = insights.build(db, policy, now=NOW)["escalation"]["latency"]
+
+    assert latency["n"] == 2
+    assert latency["median_released_s"] == 3600
+    assert latency["median_rejected_s"] == 10800
 
 
 def test_a_released_escalation_is_identified_by_its_rule_not_its_verdict(db, policy):
@@ -193,7 +240,7 @@ def test_friction_cost_excludes_what_is_still_held(db, policy):
 
 
 def test_latency_reports_its_population_not_just_a_median(db, policy):
-    """A median over an unstated population is a lie by omission: `released_at`
+    """A median over an unstated population is a lie by omission: `answered_at`
     cannot be backfilled, so some releases will never have a time."""
     plant(
         db,
@@ -201,9 +248,9 @@ def test_latency_reports_its_population_not_just_a_median(db, policy):
         verdict="allowed",
         rule_id="human-approval",
         ts=NOW - timedelta(hours=2),
-        released_at=(NOW - timedelta(hours=1)).isoformat(),
+        answered_at=(NOW - timedelta(hours=1)).isoformat(),
     )
-    plant(db, ident="untimed", verdict="allowed", rule_id="human-approval", released_at="")
+    plant(db, ident="untimed", verdict="allowed", rule_id="human-approval", answered_at="")
 
     latency = insights.build(db, policy, now=NOW)["escalation"]["latency"]
 
@@ -221,7 +268,7 @@ def test_a_negative_wait_is_discarded_and_counted(db, policy):
         verdict="allowed",
         rule_id="human-approval",
         ts=NOW,
-        released_at=(NOW - timedelta(hours=1)).isoformat(),
+        answered_at=(NOW - timedelta(hours=1)).isoformat(),
     )
 
     latency = insights.build(db, policy, now=NOW)["escalation"]["latency"]
@@ -248,7 +295,7 @@ def test_latency_says_so_on_a_database_that_predates_the_column(tmp_path, policy
 
     state = insights.build(conn, policy, now=NOW)
 
-    assert state["meta"]["capabilities"]["released_at"] is False
+    assert state["meta"]["capabilities"]["answered_at"] is False
     assert state["escalation"]["latency"]["available"] is False
 
 

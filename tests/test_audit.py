@@ -135,8 +135,8 @@ def test_recent_filters_by_agent(store):
     assert [r["agent"] for r in store.recent(agent="shopper")] == ["shopper"]
 
 
-def test_released_at_records_when_a_human_answered(store):
-    """`ts` is when the limit fired; `released_at` is when somebody answered.
+def test_answered_at_records_when_a_human_answered(store):
+    """`ts` is when the limit fired; `answered_at` is when somebody answered.
 
     The gap between them is the only measure of whether a threshold is
     protecting anyone or just taxing them, so releasing must stamp it and must
@@ -149,10 +149,10 @@ def test_released_at_records_when_a_human_answered(store):
 
     released = store.get(attempt_id)
     assert released["ts"] == parked["ts"]
-    assert datetime.fromisoformat(released["released_at"]) >= datetime.fromisoformat(parked["ts"])
+    assert datetime.fromisoformat(released["answered_at"]) >= datetime.fromisoformat(parked["ts"])
 
 
-def test_released_at_is_not_backfilled(tmp_path):
+def test_answered_at_is_not_backfilled_from_ts(tmp_path):
     """The deliberate absence, and the mirror image of the base_amount backfill.
 
     `total_amount` was a correct substitute for a single-currency row. There is
@@ -185,7 +185,7 @@ def test_released_at_is_not_backfilled(tmp_path):
 
     store = AuditStore(db_path)
 
-    assert store.get("old1")["released_at"] == ""
+    assert store.get("old1")["answered_at"] == ""
 
 
 def test_rows_are_marked_live_by_default(store):
@@ -203,3 +203,76 @@ def test_the_engines_hot_path_is_indexed(store):
 
     assert "idx_attempts_agent_verdict_ts" in names
     assert "idx_attempts_ts" in names
+
+
+def test_a_refusal_is_terminal_and_mints_nothing(store):
+    """The point of recording a no: no money moved and none can later, because
+    the row is no longer pending and only a pending row can be released."""
+    attempt_id = store.record(make_request("150.00"), PENDING)
+
+    assert store.mark_rejected(attempt_id, "not this month") is True
+
+    refused = store.get(attempt_id)
+    assert refused["verdict"] == Verdict.REJECTED.value
+    assert refused["session_id"] is None
+    assert refused["answer_note"] == "not this month"
+    assert store.spent_today("shopper") == Decimal("0")
+
+
+def test_a_refusal_leaves_the_policys_own_wording_intact(store):
+    """The rule that fired and the answer a person gave are different sentences
+    and a spender is owed both. Neither may be paraphrased into the other."""
+    attempt_id = store.record(make_request("150.00"), PENDING)
+
+    store.mark_rejected(attempt_id, "we already have one")
+
+    refused = store.get(attempt_id)
+    assert refused["reason"] == "big"
+    assert refused["answer_note"] == "we already have one"
+
+
+def test_only_a_pending_attempt_can_be_refused(store):
+    """Guarded in the WHERE clause rather than by a read-then-write, so a
+    refusal racing an approval cannot both succeed."""
+    attempt_id = store.record(make_request("150.00"), PENDING)
+    store.mark_released(attempt_id, "ses_9", "https://pay/9")
+
+    assert store.mark_rejected(attempt_id) is False
+    assert store.get(attempt_id)["verdict"] == Verdict.ALLOWED.value
+
+
+def test_a_refused_attempt_cannot_then_be_released(store):
+    """The other direction of the same race."""
+    attempt_id = store.record(make_request("150.00"), PENDING)
+    store.mark_rejected(attempt_id)
+
+    store.mark_released(attempt_id, "ses_9", "https://pay/9")
+
+    assert store.get(attempt_id)["verdict"] == Verdict.REJECTED.value
+    assert store.get(attempt_id)["session_id"] is None
+
+
+def test_answered_at_is_carried_over_from_the_old_column_name(tmp_path):
+    """`answered_at` was `released_at` while releasing was the only answer a
+    person could give. Copying it across is legitimate — a release *is* an
+    answer — which is the opposite judgement to refusing to backfill from `ts`."""
+    db_path = tmp_path / "old.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE attempts (id TEXT PRIMARY KEY, ts TEXT NOT NULL, agent TEXT NOT NULL,"
+        " merchant_name TEXT NOT NULL, merchant_url TEXT NOT NULL, total_amount TEXT NOT NULL,"
+        " currency TEXT NOT NULL, verdict TEXT NOT NULL, rule_id TEXT NOT NULL,"
+        " reason TEXT NOT NULL, session_id TEXT, payment_url TEXT,"
+        " released_at TEXT NOT NULL DEFAULT '')"
+    )
+    conn.execute(
+        "INSERT INTO attempts VALUES ('old1','2026-07-25T00:00:00+00:00','shopper','Blue Bottle',"
+        "'https://bluebottlecoffee.com','150.00','USD','allowed','human-approval','big',"
+        "'ses_old','https://pay/old','2026-07-25T00:12:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    store = AuditStore(db_path)
+
+    assert store.get("old1")["answered_at"] == "2026-07-25T00:12:00+00:00"
